@@ -13,6 +13,7 @@
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "micclicker_g722_selftest.h"
 #include "wifi_scan.h"
 
 #define MIC_ADC_TRIGGER_SAMPLES 3
@@ -245,6 +246,10 @@ void app_main(void)
     ESP_LOGI(TAG, "MicClicker C3 selftest model=%d revision=%d cores=%d",
              chip.model, chip.revision, chip.cores);
 
+    // Codec check runs first: it needs no user interaction and failing fast is more
+    // useful than running the button phases before reporting a broken codec.
+    bool g722_ok = micclicker_g722_selftest_run();
+
     esp_err_t wifi_err = micclicker_wifi_scan_run();
 
     adc_context_t adc = {0};
@@ -260,13 +265,13 @@ void app_main(void)
         }
     }
 
-    if (wifi_err == ESP_OK && adc_ok && adc.calibrated) {
-        ESP_LOGI(TAG, "SELFTEST: PASS wifi=1 adc=1 adc_calibrated=1");
-    } else if (wifi_err == ESP_OK && adc_ok) {
-        ESP_LOGW(TAG, "SELFTEST: PASS_LIMITED wifi=1 adc=1 adc_calibrated=0");
+    if (wifi_err == ESP_OK && adc_ok && adc.calibrated && g722_ok) {
+        ESP_LOGI(TAG, "SELFTEST: PASS wifi=1 adc=1 adc_calibrated=1 g722=1");
+    } else if (wifi_err == ESP_OK && adc_ok && g722_ok) {
+        ESP_LOGW(TAG, "SELFTEST: PASS_LIMITED wifi=1 adc=1 adc_calibrated=0 g722=1");
     } else {
-        ESP_LOGE(TAG, "SELFTEST: FAIL wifi=%d adc=%d wifi_err=%s adc_init_err=%s",
-                 wifi_err == ESP_OK, adc_ok, esp_err_to_name(wifi_err),
+        ESP_LOGE(TAG, "SELFTEST: FAIL wifi=%d adc=%d g722=%d wifi_err=%s adc_init_err=%s",
+                 wifi_err == ESP_OK, adc_ok, g722_ok, esp_err_to_name(wifi_err),
                  esp_err_to_name(adc_err));
     }
 }

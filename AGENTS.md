@@ -10,16 +10,18 @@ MicClicker 是一套一对一无线语音输入与快捷键设备：
 - ESP32-S3 接收并解码音频，在电脑上枚举为免驱 USB 复合设备：UAC 麦克风、标准 HID 键盘、独立 vendor-defined HID 配置接口。
 - 正常使用不需要专用驱动或常驻桥接软件。按需配置工具只负责状态查看、配对管理和快捷键配置，不参与音频或 HID 转发。
 
-当前仓库已完成第 1 阶段底层自检及第 2 阶段 macOS USB 原型验证，尚无完整产品固件或跨平台配置工具源码。S3 板卡的芯片级实测、工具链和已知限制见 [docs/hardware-s3.md](docs/hardware-s3.md)；AI Passport（C3）的硬件事实、已验证项与仍缺的验证见 [docs/hardware-c3.md](docs/hardware-c3.md)。两端芯片级备份已完成；S3 的八线 PSRAM、Wi-Fi 和运行态 BOOT 长按，以及 C3 的 Wi-Fi、四键态 ADC 分布均已真机通过。UAC2 麦克风、键盘 HID 和独立配置 HID 已在 macOS 上完成并发录音、成对键事件和配置通信。下一步是第 3 阶段 G.722 与 ESP-NOW 分测；Windows / Linux、热插拔、休眠恢复、长时录音和功耗仍须验证，不能把原型写成全链路或全平台通过。
+当前仓库已完成第 1 阶段底层自检及第 2 阶段 macOS USB 原型验证，尚无完整产品固件或跨平台配置工具源码。S3 板卡的芯片级实测、工具链和已知限制见 [docs/hardware-s3.md](docs/hardware-s3.md)；AI Passport（C3）的硬件事实、已验证项与仍缺的验证见 [docs/hardware-c3.md](docs/hardware-c3.md)。两端芯片级备份已完成；S3 的八线 PSRAM、Wi-Fi 和运行态 BOOT 长按，以及 C3 的 Wi-Fi、四键态 ADC 分布均已真机通过。UAC2 麦克风、键盘 HID 和独立配置 HID 已在 macOS 上完成并发录音、成对键事件和配置通信。第 3 阶段的 G.722 部分已完成：`firmware/components/g722/` 内嵌 WebRTC/SpanDSP 公有领域实现，与 ffmpeg 逐比特一致，C3 实机自检通过（3.26 ms/帧，20 ms 预算的 16%）；**ITU 官方向量仍未验证**（需 ITU 账号，见 `firmware/tests/g722/README.md`），不能据此宣称通过 ITU 一致性。第 3 阶段的 ESP-NOW 部分（丢包、乱序、吞吐、配对、心跳）尚未开始。Windows / Linux、热插拔、休眠恢复、长时录音和功耗仍须验证，不能把原型写成全链路或全平台通过。
 
 目录与构建入口：
 
 - `firmware/s3/`：S3 的 PSRAM / Wi-Fi / BOOT 自检工程；第 2 阶段在此基础上增加 USB 原型。
 - `firmware/c3/`：C3 的 Wi-Fi / ADC 自检工程，板级差异集中在 `main/board.h`。
 - `firmware/components/wifi_scan/`：两端共享扫描组件，不记录 SSID/BSSID，不自动擦除 NVS。
+- `firmware/components/g722/`：G.722 编解码组件（公有领域，非 LGPL），帧长固定 320 样本 / 160 字节。
+- `firmware/tests/g722/`：G.722 主机侧验证，`./firmware/tests/g722/run.sh` 不需要 IDF 或硬件。
 - `firmware/README.md`：锁定的依赖、烧录影响、实际命令和自检判据。
 
-ESP-IDF 固定为 v5.5.3；在仓库根目录使用 `./firmware/build.sh s3` 和 `./firmware/build.sh c3`。这两条命令已于 2026-11-14 实际构建通过。新增源码目录、构建入口或测试命令时，同步更新本文件和 `firmware/README.md`。
+ESP-IDF 固定为 v5.5.3；在仓库根目录使用 `./firmware/build.sh s3` 和 `./firmware/build.sh c3`。这两条命令已于 2026-11-14 实际构建通过，同日加入 G.722 组件后再次构建通过。新增源码目录、构建入口或测试命令时，同步更新本文件和 `firmware/README.md`。
 
 首版不包含扬声器、多发送端、后台全局热键或 CDC。普通 HID 只作用于系统当前焦点，不得把快捷键描述为可保证送达后台 ASR 应用。
 

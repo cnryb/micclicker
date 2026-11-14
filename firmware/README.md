@@ -7,6 +7,8 @@
 - `s3/`：ESP32-S3-N16R8 固件。默认构建 UAC2 麦克风 + 标准键盘 HID + vendor 配置 HID 原型；`MICCLICKER_STAGE1_SELFTEST=y` 时改为构建 PSRAM / Wi-Fi / BOOT 自检。音频为 16 kHz、16-bit 小端 PCM、单声道、1 kHz 已知正弦波。
 - `c3/`：AI Passport / ESP32-C3 自检。执行 Wi-Fi 扫描后，依次采集 RELEASED、UP、DOWN、OK 四个键态的 ADC 数据，输出原始值、噪声、估算/校准电压、窗口裕量和误分类数。
 - `components/wifi_scan/`：两端共享的最小 Wi-Fi 扫描组件，不记录 SSID/BSSID，不自动擦除 NVS。
+- `components/g722/`：G.722 64 kbit/s 编解码组件，内嵌 WebRTC/SpanDSP 的公有领域实现，帧长固定为 320 样本 / 160 字节。
+- `tests/g722/`：G.722 主机侧验证（封装契约 + 黄金向量逐比特比对），不依赖 ESP-IDF 或硬件，详见 `tests/g722/README.md`。
 - `build.sh`：锁定 ESP-IDF v5.5.3 的构建入口。
 
 板级引脚和 ADC 阈值集中在 `c3/main/board.h`。S3 的 Flash、PSRAM、控制台及分区配置在 `s3/sdkconfig.defaults` 和 `s3/partitions.csv`，不预设未经确认的原生 USB 引脚。
@@ -19,7 +21,7 @@
 - esptool 4.12.0
 - `xtensa-esp-elf` / `riscv32-esp-elf` 14.2.0_20251107
 
-无 Arduino、外部 BSP 二进制组件或 G.722 依赖。S3 的 USB 依赖由 `s3/main/idf_component.yml` 和 `s3/dependencies.lock` 锁定：`espressif/esp_tinyusb 2.0.0`、`espressif/tinyusb 0.21.0~6`。AI Passport 引脚事实来自 MIT 许可的上游 FoloToy BSP，版本和证据边界见 `docs/hardware-c3.md`。
+无 Arduino、外部 BSP 二进制组件。**G.722 不使用外部库**：`components/g722/` 内嵌 WebRTC `third_party/g722`（SpanDSP，公有领域），只改过 include 路径，来源与许可证见该目录下的 `README.upstream.txt` 和 `LICENSE-upstream.txt`。S3 的 USB 依赖由 `s3/main/idf_component.yml` 和 `s3/dependencies.lock` 锁定：`espressif/esp_tinyusb 2.0.0`、`espressif/tinyusb 0.21.0~6`。AI Passport 引脚事实来自 MIT 许可的上游 FoloToy BSP，版本和证据边界见 `docs/hardware-c3.md`。
 
 ## 构建
 
@@ -28,6 +30,7 @@
 ```bash
 ./firmware/build.sh s3   # 默认：USB 复合设备原型
 ./firmware/build.sh c3   # C3 自检（Wi-Fi + 四键态 ADC + G.722）
+./firmware/tests/g722/run.sh   # G.722 主机侧验证，不需要 IDF 或硬件
 ```
 
 复跑 S3 第 1 阶段自检时，先在 `firmware/s3/sdkconfig.defaults` 中加入 `CONFIG_MICCLICKER_STAGE1_SELFTEST=y`，再执行 `./firmware/build.sh s3`；恢复 USB 原型时移除该设置。构建脚本每次都会重新生成 `sdkconfig`，因此切换会完整生效。
@@ -81,6 +84,8 @@ SELFTEST: PASS psram=1 wifi=1 boot=1
 
 PSRAM 测试覆盖启动后最大连续空闲堆块，并要求至少达到物理容量的 90%；其他堆块、碎片、保留区或已占用区域不计入这两轮覆盖。启动阶段的 IDF `SPIRAM_MEMTEST` 也只是补充抽样检查，不能合起来解释为物理全片逐字节验证。Wi-Fi 扫描结束后出现 `S3_BOOT: WAITING` 时，按住 S3 的 BOOT 键 3 秒；只在应用运行态测试 GPIO0，复位时不要按 BOOT。BOOT 等待最多 30 秒，超时或前置测试失败会输出最终 FAIL，不会无限等待。
 
+C3 启动后先跑 G.722 自检（无需交互），要求 `G722_SELFTEST: PASS bitexact=1 decode=1`，其中 `us_per_frame` 必须低于 10000（20 ms 帧预算的一半）。2026-11-14 实测 C3 为 3263 µs。随后是四个 ADC 阶段。
+
 C3 必须依次完成四个阶段。每个阶段等待目标键态最多 60 秒，连续检测到 3 次后才开始以 10 ms 间隔采样 400 次；看到阶段提示后按住对应键，直到阶段结果出现。超时会输出等待期间的原始读数诊断和最终 FAIL：
 
 1. RELEASED：全部松开。
@@ -88,7 +93,7 @@ C3 必须依次完成四个阶段。每个阶段等待目标键态最多 60 秒�
 3. DOWN：按住 DOWN，直到该阶段结果出现。
 4. OK：按住 OK，直到该阶段结果出现。
 
-最终需要每个 `ADC_PHASE: PASS` 和 `SELFTEST: PASS wifi=1 adc=1 adc_calibrated=1`。若校准不可用，原始 ADC 数据仍有效，但 mV 仅是 12 位满量程近似值，最终只输出 `SELFTEST: PASS_LIMITED`，表示当前近似换算和窗口匹配，不能解释为电气电压精度验证通过。
+最终需要每个 `ADC_PHASE: PASS` 和 `SELFTEST: PASS wifi=1 adc=1 adc_calibrated=1 g722=1`。若校准不可用，原始 ADC 数据仍有效，但 mV 仅是 12 位满量程近似值，最终只输出 `SELFTEST: PASS_LIMITED`，表示当前近似换算和窗口匹配，不能解释为电气电压精度验证通过。
 
 ## USB 复合设备原型
 
