@@ -10,7 +10,16 @@ MicClicker 是一套一对一无线语音输入与快捷键设备：
 - ESP32-S3 接收并解码音频，在电脑上枚举为免驱 USB 复合设备：UAC 麦克风、标准 HID 键盘、独立 vendor-defined HID 配置接口。
 - 正常使用不需要专用驱动或常驻桥接软件。按需配置工具只负责状态查看、配对管理和快捷键配置，不参与音频或 HID 转发。
 
-当前仓库以总体设计为主，尚无固件、配置工具源码。S3 板卡已完成芯片级实测，结论、命令与已知限制见 [docs/hardware-s3.md](docs/hardware-s3.md)；S3 需要的 Xtensa 工具链尚未安装，因此还没有经过验证的固件构建命令。不要假设已有工程入口或依赖版本。新增可构建工程时，必须同步补充本文件的目录说明和实际验证过的命令。
+当前仓库已完成第 1 阶段底层自检及第 2 阶段 macOS USB 原型验证，尚无完整产品固件或跨平台配置工具源码。S3 板卡的芯片级实测、工具链和已知限制见 [docs/hardware-s3.md](docs/hardware-s3.md)；AI Passport（C3）的硬件事实、已验证项与仍缺的验证见 [docs/hardware-c3.md](docs/hardware-c3.md)。两端芯片级备份已完成；S3 的八线 PSRAM、Wi-Fi 和运行态 BOOT 长按，以及 C3 的 Wi-Fi、四键态 ADC 分布均已真机通过。UAC2 麦克风、键盘 HID 和独立配置 HID 已在 macOS 上完成并发录音、成对键事件和配置通信。下一步是第 3 阶段 G.722 与 ESP-NOW 分测；Windows / Linux、热插拔、休眠恢复、长时录音和功耗仍须验证，不能把原型写成全链路或全平台通过。
+
+目录与构建入口：
+
+- `firmware/s3/`：S3 的 PSRAM / Wi-Fi / BOOT 自检工程；第 2 阶段在此基础上增加 USB 原型。
+- `firmware/c3/`：C3 的 Wi-Fi / ADC 自检工程，板级差异集中在 `main/board.h`。
+- `firmware/components/wifi_scan/`：两端共享扫描组件，不记录 SSID/BSSID，不自动擦除 NVS。
+- `firmware/README.md`：锁定的依赖、烧录影响、实际命令和自检判据。
+
+ESP-IDF 固定为 v5.5.3；在仓库根目录使用 `./firmware/build.sh s3` 和 `./firmware/build.sh c3`。这两条命令已于 2026-11-14 实际构建通过。新增源码目录、构建入口或测试命令时，同步更新本文件和 `firmware/README.md`。
 
 首版不包含扬声器、多发送端、后台全局热键或 CDC。普通 HID 只作用于系统当前焦点，不得把快捷键描述为可保证送达后台 ASR 应用。
 
@@ -31,7 +40,7 @@ MicClicker 是一套一对一无线语音输入与快捷键设备：
 
 ## 3. 硬件与依赖
 
-- 不以开发板名称或常见接法代替原理图。AI Passport 的硬件版本、BSP、麦克风接口、ADC 电阻梯阈值、LED/配对控件和供电方式，以及 S3 的 Flash/PSRAM、原生 USB 与引脚，都必须先确认再固化。
+- 不以开发板名称或常见接法代替原理图。AI Passport 的 BSP、麦克风接口、ADC 电阻梯阈值、LED/配对控件和供电方式，以及 S3 的 Flash/PSRAM、原生 USB 与引脚，都必须先确认再固化。AI Passport 的**原理图、PCB 源文件、硬件版本号与咪头型号已确认上游不公开**（[hardware-c3.md](docs/hardware-c3.md) 第 2 节），只剩开壳读丝印或向供应商索取两条路，不要当作可查资料再查一遍。
 - 不得仅凭 GPIO0 推断 ADC 按键电路，也不得把 GPIO19/20 当作所有 S3 板卡的既定 USB 引脚。
 - 将板级引脚、阈值和硬件差异集中在明确的配置层，避免散落到协议、音频和 USB 业务逻辑中。
 - 锁定 ESP-IDF/Arduino、BSP、TinyUSB、编解码库及配置工具依赖的版本，并记录实际可复现的安装、构建和烧录步骤。

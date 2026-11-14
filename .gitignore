@@ -1,3 +1,9 @@
 # 一次性验证产物：截图、日志、探针脚本、固件备份等，不进版本库
 .tmp/
 .tmp-*
+
+# ESP-IDF 本地构建配置与产物；可复现配置保留在 sdkconfig.defaults
+firmware/*/build/
+firmware/*/sdkconfig
+firmware/*/sdkconfig.old
+firmware/*/managed_components/

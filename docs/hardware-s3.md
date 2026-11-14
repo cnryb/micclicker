@@ -1,4 +1,4 @@
-# ESP32-S3 板卡实测记录（2026-11-13）
+# ESP32-S3 板卡实测记录（2026-11-14 更新）
 
 到货后第一轮芯片级体检的实测结果、命令与结论。本文只记录**实测过的事实**和**尚未验证的部分**，不替代原理图。
 
@@ -6,7 +6,11 @@
 
 板子在芯片级工作正常：供电、晶振、Flash 读写通路、原生 USB 枚举、CH343 调试串口与自动复位烧录、MAC 烧录、出厂固件运行都已实测通过。
 
-**未验证**（都需要先有固件，见第 6 节）：PSRAM 的实际读写、Wi-Fi/BLE 射频、USB 复合设备（UAC 麦克风 + HID 键盘 + 配置 HID）的枚举与端点。
+2026-11-14 自检固件进一步通过：8 MB octal PSRAM 初始化及两轮写读、Wi-Fi STA 扫描、运行态 GPIO0 / BOOT 长按 3 秒。结果与边界见第 6 节。
+
+同日 **macOS USB 复合设备原型通过**：UAC2 麦克风、标准键盘 HID 和独立 vendor 配置 HID 已并发完成录音、成对 Left Alt / Enter 与配置通信，见第 6.2 节。
+
+**仍未验证**：Windows / Linux、热插拔与休眠恢复、长时带负载供电余量与发热。BLE 不在首版范围内，未做专项验证。
 
 ## 2. 设备身份
 
@@ -82,7 +86,25 @@ esptool --chip esp32s3 --port /dev/cu.usbmodemXXXX --baud 460800 \
 
 ## 6. 验证方式与未验证项
 
-环境：macOS 15.3.1 (arm64)；esptool 4.13.0（取自 `~/.espressif/python_env/idf5.5_py3.11_env`）；ESP-IDF v5.5.3 已安装于 `~/esp/esp-idf-v5.5.3`，但**只有 RISC-V 工具链（C3 用），S3 需要的 Xtensa 工具链尚未安装**。
+环境：macOS 15.3.1 (arm64)；ESP-IDF v5.5.3 安装在 `~/esp/esp-idf-v5.5.3`；python 环境只剩 `~/.espressif/python_env/idf5.5_py3.13_env`（自带 `esptool.py` 4.12.0）。
+
+**Xtensa 工具链已于 2026-11-13 装好**：`~/.espressif/tools` 下现有 `xtensa-esp-elf 14.2.0_20251107`、`xtensa-esp-elf-gdb 16.3_20250913`、`esp32ulp-elf 2.38`，与原有 RISC-V 工具链并存。直连 GitHub 只有几百 KB/s（几分钟才下到 8%），改用 Espressif 国内镜像后一次装完：
+
+```bash
+IDF_PATH="$HOME/esp/esp-idf-v5.5.3" IDF_TOOLS_PATH="$HOME/.espressif" \
+IDF_GITHUB_ASSETS="dl.espressif.cn/github_assets" \
+"$HOME/.espressif/python_env/idf5.5_py3.13_env/bin/python" \
+  "$HOME/esp/esp-idf-v5.5.3/tools/idf_tools.py" install --targets=esp32s3
+```
+
+`idf.py` 还不能直接调：`export.sh` 会挑到 `/usr/bin/python3`（3.9.6），报 `idf5.5_py3.9_env` 不存在。先指定 venv 再导出即可（已实测输出 `ESP-IDF v5.5.3`）：
+
+```bash
+export IDF_PYTHON_ENV_PATH="$HOME/.espressif/python_env/idf5.5_py3.13_env"
+source ~/esp/esp-idf-v5.5.3/export.sh
+```
+
+本项目现已有可复现构建入口 `./firmware/build.sh s3`。IDF 锁定为 v5.5.3、commit `2c211b236707889e8400c4dc5644dd5c4ee071e0`；脚本同时检查编译器 `14.2.0_20251107`，并每次从 `sdkconfig.defaults` 重新生成配置，避免旧选择残留。
 
 本轮实际执行的命令（可直接复跑）：
 
@@ -95,18 +117,60 @@ esptool --chip esp32s3 --port $PORT --baud 921600 --before default_reset --after
   read_flash 0x8000 0x1000 partition-table.bin      # 分区表
 ```
 
-未验证项及其前置条件：
+### 6.1 MicClicker 自检固件实测（2026-11-14）
 
-| 未验证 | 为什么现在验不了 | 验证办法 |
+目标设备再次核对为 ESP32-S3 rev v0.2、MAC `c4:9e:7e:3c:d5:d4`，串口为 CH343 `/dev/cu.usbmodem5D4D0449961`。完整烧录只写 `0x0` bootloader、`0x8000` 分区表、`0x10000` factory；后续探针更新只用 `app-flash` 写 factory，没有整片擦除或 merged-bin。
+
+```bash
+./firmware/build.sh s3
+export IDF_PYTHON_ENV_PATH="$HOME/.espressif/python_env/idf5.5_py3.13_env"
+source ~/esp/esp-idf-v5.5.3/export.sh
+idf.py -C firmware/s3 -p /dev/cu.usbmodem5D4D0449961 -b 460800 flash
+idf.py -C firmware/s3 -p /dev/cu.usbmodem5D4D0449961 monitor -b 115200
+```
+
+| 项目 | 实测结果 | 证据与边界 |
 | :--- | :--- | :--- |
-| PSRAM 是否真好用、容量与线宽 | eFuse 只声明 8 MB，ROM 无读写测试命令 | 烧自检固件：按 octal 配置初始化，全片写读校验 |
-| Wi-Fi / BLE 射频与天线 | 需要驱动起来才能扫描 | 自检固件里做一次 Wi-Fi 扫描，看能否扫到周围 AP |
-| USB 复合设备（UAC + HID×2） | 需要自写描述符与端点 | DESIGN.md 第 2 阶段 USB 原型 |
-| 供电余量、发热 | 需带负载长时间观察 | 全链路跑起来后按第 7 节验收基线测 |
+| PSRAM 初始化 | **通过**：AP 厂商、64 Mbit、8 MB、octal 80 MHz；IDF 启动 memtest OK | 启动日志与 `esp_psram_get_size()` 一致 |
+| PSRAM 应用写读 | **通过**：物理/堆容量均 8 388 608 B，最大连续空闲块 **8 257 536 B**，两种地址相关种子各完整写入后读回，堆前后完整 | 不是物理全 8 MiB 每字节覆盖；其他堆块、碎片和保留区不在这两轮范围内 |
+| Wi-Fi 射频 | **通过**：首轮扫描 15 AP，最强 RSSI −43 dBm；后续多次扫描也成功 | 仅证明 STA 扫描与天线基本可用，不是 ESP-NOW、吞吐或距离验证 |
+| 调试 UART | **通过**：启动日志明确 `GPIO 44 and 43 are used as console UART I/O pins`，CH343 持续可读 | 电脑到芯片 UART0 的通路已确认 |
+| BOOT 运行态输入 | **通过**：独立复测中 GPIO0 从 1 变 0，连续 3 秒为 0，`S3_BOOT: PASS hold_ms=3000` | 只由工具复位，用户仅长按 BOOT；**没有执行 BOOT+RST 下载模式交叉验证**，不列为已验项 |
+
+首轮 PSRAM / Wi-Fi 日志：`.tmp/s3-selftest-20261114-151506/monitor.log`。BOOT 独立复测日志：`.tmp/s3-selftest-20261114-160215/monitor.log`。最终工程修正版另于 `.tmp/s3-selftest-20261114-160647/build.log` 构建通过；修正内容是无输入超时和构建配置复用，不改变上述已测电平或容量结论。
+
+仍未验证：
+
+| 项 | 下一步 |
+| :--- | :--- |
+| 其他 OS、热插拔、休眠恢复 | macOS 首轮已通过，见第 6.2 节；继续补 Windows / Linux 与恢复测试 |
+| 供电余量、发热 | 全链路运行后按第 7 节验收基线做带负载长测 |
+| BLE | 首版不使用，不列为当前阻塞项 |
+
+### 6.2 macOS USB 复合设备原型（2026-11-14）
+
+依赖锁定为 `espressif/esp_tinyusb 2.0.0` + `espressif/tinyusb 0.21.0~6`，见 `firmware/s3/dependencies.lock`。原型使用 `303a:4014`，序列号由 S3 MAC 生成；该 PID 仅用于当前原型，正式产品标识仍需另行确认。
+
+| 功能 | 实现与实测 |
+| :--- | :--- |
+| UAC2 麦克风 | 16 kHz、16-bit 小端 PCM、单声道、1 kHz 已知正弦波；等步 IN `0x81`，最大包 34 B，应用每毫秒写 32 B，FIFO 272 B |
+| 标准键盘 HID | 独立 instance 0 / USB 接口 2，中断 IN `0x82`；Left Alt 使用 modifier，Enter 使用 `0x28`，按下/释放成对，all-keys-up 遇忙保留 pending 并重试 |
+| vendor 配置 HID | 独立 instance 1 / USB 接口 3，Report ID 0、64 B payload，OUT `0x03` / IN `0x83`；配置命令有界入队，GET_REPORT 返回版本、状态和计数，非法命令返回错误 |
+| 调试日志 | 继续使用独立 CH343 UART，不增加 CDC/MIDI |
+
+实测结果：
+
+1. `system_profiler SPUSBDataType` 显示 `303a:4014`、Full Speed 和预期序列号；AVFoundation 列出 `MicClicker Microphone`。
+2. 配置 ping 的版本、计数和结果校验通过。Left Alt 与 Enter 各观察到一次真实按下/释放，all-keys-up 成功；主机日志为 `.tmp/usb-host-prototype-20261114/host-test.log`。
+3. 10 秒录音得到 160000 个 16-bit/mono/16 kHz 样本，主频 **999.95 Hz**、RMS **8484.58**、最大连续零样本 1，见 `.tmp/usb-prototype-20261114-171405/mic-10s.wav` 与 `analysis.log`。
+4. 录音期间发送 Left Alt 并执行配置 ping：6 秒并发录音主频 **1000.00 Hz**、RMS **8484.58**，Alt 成对、配置成功，见 `.tmp/usb-prototype-20261114-171850/mic-concurrent.wav`、`analysis.log` 和 `.tmp/usb-host-prototype-20261114/concurrent-alt.log`。
+5. alt 0 下生产和实际 USB 包计数均为 0，不再后台写 FIFO；实际发送量由 `tud_audio_tx_done_isr` 轻量计数。短写单独记录，但 TinyUSB EP FIFO 可覆盖旧数据，**短写不等于溢出或丢帧计数**，后续环形缓冲仍需单独统计。
+
+本轮完成的是 macOS 首轮原型，不代表所有平台验收完成。Windows / Linux、热插拔、休眠恢复、至少 30 分钟连续录音、功耗与异常主机行为仍待验证。固定 Clock Source 下合规主机不会 SET_CUR 采样率；若需防御异常 SET_CUR，后续应在驱动层前置校验，不能只依赖应用回调拒绝。是否改用 UAC1 由目标 Windows 版本决定。
 
 ## 7. 已知硬件限制与操作注意
 
-1. **调试 UART 用 COM 口，不必外接 USB-TTL。** DESIGN.md 5.3 要求「正式固件不增加 CDC，调试输出使用独立的 UART 方案」，板上 CH343 桥（COM 口）正好承担这条通道。注意正式固件要占用的是芯片 UART0（默认 GPIO43/44），引脚是否从排针引出需对着实物/原理图确认；桥只解决「电脑侧怎么接」，不解决「芯片侧引到哪」。
+1. **调试 UART 用 COM 口，不必外接 USB-TTL。** DESIGN.md 5.3 要求「正式固件不增加 CDC，调试输出使用独立的 UART 方案」，板上 CH343 桥（COM 口）正好承担这条通道。2026-11-14 自检已通过实际启动日志确认 GPIO43/44 到 CH343 的通路；其他排针是否另行引出不影响该结论。
 2. **USB-Serial/JTAG 连续大批量读取约 6 MB 后会挂死，CH343 不会。** 走原生 USB 口时两轮实测分别在 6.09 MB / 6.08 MB 处停住（进程不退、日志不再增长），带一次复位重连即可恢复；走 COM 口单次连续读取 7 MB 用时 91.3 s 正常完成。说明这是 USB-Serial/JTAG 通道的特性，不是 Flash 故障。**大镜像烧录和整片备份走 COM 口更稳**。
 3. **读取/烧录速度以 COM 口为基准**（CH343 受 UART 线速限制）：1 MB 读取在 460800 baud 下约 24 s，921600 baud 下约 13 s。再高的波特率未测。
 4. **进下载模式分两种情况**（原因见第 3 节）：走 COM 口可自动复位，无需按键；走原生 USB 口必须手动 BOOT + RST。自动化脚本应以 COM 口为首选，并把失败口径与手动步骤写清楚。
@@ -114,6 +178,7 @@ esptool --chip esp32s3 --port $PORT --baud 921600 --before default_reset --after
 
 ## 8. 下一步
 
-1. 安装 Xtensa 工具链（`idf_tools.py install --targets=esp32s3`，约 250 MB，写入 `~/.espressif`），解锁 S3 固件编译。
-2. 写一支自检固件，补齐第 6 节的 PSRAM / 射频两项未验证项，并把结果回填本文。
-3. 进入 DESIGN.md 第 6 节第 2 阶段：USB 复合设备原型。
+1. ~~安装 Xtensa 工具链~~ **已完成（2026-11-13）**，版本、安装命令与 `idf.py` 的环境变量坑见第 6 节。
+2. ~~写自检固件补齐 PSRAM / 射频~~ **已完成（2026-11-14）**，运行态 BOOT 输入也已通过，见第 6.1 节。
+3. ~~进入 DESIGN.md 第 2 阶段 USB 原型~~ **macOS 首轮已通过（2026-11-14）**，见第 6.2 节。
+4. **下一步**：进入第 3 阶段 G.722 与 ESP-NOW 分测；另按平台补做 USB 热插拔、休眠和长时验收。
