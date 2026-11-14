@@ -32,3 +32,5 @@ CONFIG_TINYUSB_HID_COUNT=2
 CONFIG_TINYUSB_MIDI_COUNT=0
 CONFIG_TINYUSB_VENDOR_COUNT=0
 
+# Stage 3 ESP-NOW probe, receiver role. Selected by `./firmware/build.sh s3 --probe`,
+# which applies sdkconfig.probe.defaults on top of this file.

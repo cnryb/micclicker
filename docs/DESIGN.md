@@ -49,6 +49,7 @@ AI Passport (ESP32-C3)
 | :--- | :--- |
 | 音频 | 16 kHz、16-bit 有符号小端 PCM、单声道；每帧 20 ms，即 320 个采样 |
 | 编码 | G.722 **64 kbit/s**，160 字节/20 ms；实现为 `firmware/components/g722/`（WebRTC/SpanDSP 公有领域实现）。**已通过**与 ffmpeg 的逐比特比对和真实 C3 自检；**ITU 官方向量未验证**（需 ITU 账号下载），见 `firmware/tests/g722/README.md` |
+| 协议 | 帧格式、序号规则、心跳与配对见 [protocol.md](protocol.md)；实现为 `firmware/components/link_proto/`，主机侧 141 项断言通过 |
 | 无线 | 按 ESP-NOW v1.0 的 250 字节兼容上限设计，不经过 Wi-Fi 路由器 |
 | USB | 原生 USB 复合设备：UAC 麦克风 + HID 键盘 + 独立 vendor-defined HID 配置接口；首版不增加 CDC/MIDI |
 | 拓扑 | 音频 C3 → S3；按键事件 C3 → S3，ACK、心跳/状态和配对控制按协议传输 |
@@ -75,7 +76,7 @@ AI Passport (ESP32-C3)
 | 字段 | 长度 | 说明 |
 | :--- | ---: | :--- |
 | `version` | 1 B | 当前为 1 |
-| `type` | 1 B | `0x01` 音频、`0x02` 按键、`0x03` 按键 ACK；心跳/状态和配对等控制类型后续定义 |
+| `type` | 1 B | `0x01` 音频、`0x02` 按键、`0x03` 按键 ACK、`0x04` 心跳、`0x05` 心跳回复、`0x06` 配对请求、`0x07` 配对回复 |
 | `session` | 2 B | C3 启动时生成的新会话 ID，ACK 回送原值，用于隔离上次会话的延迟包 |
 | `seq` | 4 B | 各类型独立递增；音频按帧编号，按键按事件编号，重传不改变事件序号 |
 
@@ -84,8 +85,16 @@ AI Passport (ESP32-C3)
 | 音频 | 160 B G.722 数据；固定一帧一包 | 168 B |
 | 按键 | `key_id` 1 B + `event` 1 B（按下/释放） | 10 B |
 | 按键 ACK | 被确认的按键事件 `seq`，4 B | 12 B |
+| 心跳 | `phase` 1 B + `mode` 1 B + `flags` 2 B | 12 B |
+| 心跳回复 | 回显 `seq` 4 B + 状态 4 B + 七项累计计数各 4 B | 44 B |
+| 配对请求 | LMK 16 B + PMK 16 B + 信道 1 B | 41 B |
+| 配对回复 | 结果 1 B + 状态 1 B + 保留 2 B | 12 B |
+
+长度必须**精确匹配**，多一字节与少一字节都丢弃；逐字段的偏移、语义和实测修正记录见 [protocol.md](protocol.md)。
 
 音频不因跳号而重传迟到帧。按键事件以相同序号重传，直到收到 ACK 或达到重试上限；S3 按序号去重。发送队列允许按键和 ACK 排在音频之前，但不能抢占已在发送的包；拥塞时丢弃最旧音频帧并计数，禁止无界积压。
+
+序号只在发送真正成功后前进：驱动拒绝发送时复用同一序号重试，否则背压会被下游算成无线丢包（实测踩过，见 [protocol.md](protocol.md) 第 7 节）。
 
 ## 5. 端侧设计
 
@@ -124,7 +133,7 @@ C3 只对去抖后的状态变化生成事件，不依赖电脑端自动重复�
 | :--- | :--- | :--- |
 | 1. 硬件与依赖确认 | 锁定第 2 节参数；验证 PSRAM、Wi-Fi、ADC、配对输入和原生 USB 基础枚举 | **底层自检已通过（2026-11-14）**，可复现构建与实测记录见 `firmware/README.md` 和硬件文档；进入第 2 阶段 |
 | 2. USB 原型 | S3 输出已知 PCM/正弦波，同时发送成对 HID 按下/释放并验证配置 HID | **macOS 首轮通过（2026-11-14）**：UAC2、键盘 HID、配置 HID 并发录音、键事件与配置通信正常；Windows / Linux、热插拔和休眠恢复待补 |
-| 3. 编码与无线分测 | G.722 标准向量对拍；用合成数据测试 ESP-NOW 丢包、乱序、吞吐、配对和心跳 | **G.722 已测（2026-11-14）**：与 ffmpeg 逐比特一致、C3 实机 3.26 ms/帧；ITU 官方向量仍缺。ESP-NOW 丢包/乱序/配对/心跳待做 |
+| 3. 编码与无线分测 | G.722 标准向量对拍；用合成数据测试 ESP-NOW 丢包、乱序、吞吐、配对和心跳 | **G.722 已测（2026-11-14）**：与 ffmpeg 逐比特一致、C3 实机 3.26 ms/帧；ITU 官方向量仍缺。**ESP-NOW 已测（2026-11-14）**：1 米直视信道 1 下四轮零丢包、突发 406–507 kbit/s、RTT 平均 5.7–8.2 ms、20 按键事件全应用且 40 次重传全抑制、配对与加密单播通过，详见 `firmware/tests/espnow/README.md`。**未做**：重启后自动按旧绑定重连、距离/穿墙/干扰、与音频并发 |
 | 4. 音频全链路 | C3 采集编码，S3 解码、缓冲并输出 USB 音频 | 连续录音和 ASR 可用，无持续断流或缓冲失控 |
 | 5. 按键与故障联调 | 加入运行时映射、ACK、去重和 all-keys-up，注入丢包、掉线、重启 | 状态显示正确，音频与按键并发正常，无卡键，链路可恢复 |
 
@@ -149,4 +158,5 @@ C3 只对去抖后的状态变化生成事件，不依赖电脑端自动重复�
 
 - [ESP-NOW 官方文档](https://docs.espressif.com/projects/esp-idf/en/latest/esp32/api-reference/network/esp_now.html)：信道、加密、发送回调及应用层 ACK/重传要求。
 - [ITU-T G.722](https://www.itu.int/rec/T-REC-G.722/en)：64 kbit/s 编码标准及测试资料入口。
+- 本项目无线协议：[protocol.md](protocol.md)：帧格式、序号与去重规则、心跳计数、配对流程及其安全边界。
 - [ESP USB Device UAC](https://docs.espressif.com/projects/esp-iot-solution/en/latest/usb/usb_device/usb_device_uac.html)：UAC 回调、缓冲和 OS 兼容性验证参考；不代表已选定该组件。

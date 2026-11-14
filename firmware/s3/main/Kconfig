@@ -1,4 +1,4 @@
-menu "MicClicker"
+menu "MicClicker S3"
 
 config MICCLICKER_STAGE1_SELFTEST
     bool "Run stage 1 hardware selftests instead of the USB prototype"
@@ -6,5 +6,22 @@ config MICCLICKER_STAGE1_SELFTEST
     help
         Keep the PSRAM, Wi-Fi, ADC and pairing-input probes available without
         including them in the default USB composite-device build.
+
+config MICCLICKER_ESPNOW_PROBE_RECEIVER
+    bool "Run the ESP-NOW probe as the receiver instead of the USB prototype"
+    default n
+    depends on !MICCLICKER_STAGE1_SELFTEST
+    help
+        Replaces the USB composite device with the stage-3 ESP-NOW probe receiver.
+        Pair with the C3 sender probe on the same channel. The probe does not
+        enumerate USB, so the board is reachable only over the CH343 console.
+
+config MICCLICKER_ESPNOW_PROBE_CHANNEL
+    int "ESP-NOW probe channel (2.4 GHz)"
+    range 1 13
+    default 1
+    depends on MICCLICKER_ESPNOW_PROBE_RECEIVER
+    help
+        Both ends must use the same channel.
 
 endmenu

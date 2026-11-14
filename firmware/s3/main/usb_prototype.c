@@ -1,6 +1,6 @@
 #include "sdkconfig.h"
 
-#if !CONFIG_MICCLICKER_STAGE1_SELFTEST
+#if !CONFIG_MICCLICKER_STAGE1_SELFTEST && !CONFIG_MICCLICKER_ESPNOW_PROBE_RECEIVER
 
 #include <math.h>
 #include <stdbool.h>

@@ -12,3 +12,6 @@ CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
 CONFIG_ESP_CONSOLE_SECONDARY_NONE=y
 CONFIG_FREERTOS_HZ=1000
 CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192
+
+# Stage 3 ESP-NOW probe, sender role. Selected by `./firmware/build.sh c3 --probe`,
+# which applies sdkconfig.probe.defaults on top of this file.

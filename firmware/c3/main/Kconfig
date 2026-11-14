@@ -1,0 +1,20 @@
+menu "MicClicker C3"
+
+config MICCLICKER_ESPNOW_PROBE_SENDER
+    bool "Run the ESP-NOW probe as the sender instead of the hardware selftest"
+    default n
+    help
+        Replaces the G.722 / Wi-Fi / ADC selftest with the stage-3 ESP-NOW probe:
+        discovery, burst audio, paced audio, key retransmission, pairing and an
+        encrypted round trip. Pair with the S3 receiver probe on the same channel.
+
+config MICCLICKER_ESPNOW_PROBE_CHANNEL
+    int "ESP-NOW probe channel (2.4 GHz)"
+    range 1 13
+    default 1
+    depends on MICCLICKER_ESPNOW_PROBE_SENDER
+    help
+        Both ends must use the same channel. The probe logs the channel it actually
+        reached, so a mismatch shows up in the logs rather than only as silence.
+
+endmenu

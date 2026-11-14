@@ -1,12 +1,23 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-if [[ $# -ne 1 || ( "$1" != "s3" && "$1" != "c3" ) ]]; then
-    printf 'Usage: %s s3|c3\n' "$0" >&2
+PROFILE=""
+if [[ $# -eq 1 && ( "$1" == "s3" || "$1" == "c3" ) ]]; then
+    TARGET=$1
+elif [[ $# -eq 2 && ( "$1" == "s3" || "$1" == "c3" ) && "$2" == "--probe" ]]; then
+    TARGET=$1
+    PROFILE="probe"
+elif [[ $# -eq 2 && ( "$1" == "s3" || "$1" == "c3" ) && "$2" == "--default" ]]; then
+    TARGET=$1
+    PROFILE="default"
+else
+    printf 'Usage: %s s3|c3 [--probe|--default]\n' "$0" >&2
+    printf '  (no flag)  build the product profile (USB prototype on S3, selftest on C3)\n' >&2
+    printf '  --probe    build the stage-3 ESP-NOW probe (receiver on S3, sender on C3)\n' >&2
+    printf '  --default  same as no flag; kept explicit for scripts\n' >&2
     exit 2
 fi
 
-TARGET=$1
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 export IDF_PATH="${IDF_PATH:-$HOME/esp/esp-idf-v5.5.3}"
 export IDF_PYTHON_ENV_PATH="${IDF_PYTHON_ENV_PATH:-$HOME/.espressif/python_env/idf5.5_py3.13_env}"
@@ -54,4 +65,27 @@ if [[ -e "$SDKCONFIG" ]]; then
     rm -- "$RESOLVED_SDKCONFIG"
 fi
 
-idf.py -C "$ROOT/firmware/$TARGET" build
+# The probe is a separate configuration, not a runtime mode: it replaces the
+# interactive phases on C3 and the USB composite device on S3, so shipping it as a
+# runtime switch would put the radio and the other subsystems in one binary.
+SDKCONFIG_DEFAULTS="sdkconfig.defaults"
+if [[ "$PROFILE" == "probe" ]]; then
+    if [[ ! -f "$ROOT/firmware/$TARGET/sdkconfig.probe.defaults" ]]; then
+        printf 'Probe profile not defined for %s\n' "$TARGET" >&2
+        exit 1
+    fi
+    SDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.probe.defaults"
+    printf 'Building %s with the ESP-NOW probe profile\n' "$TARGET"
+else
+    printf 'Building %s with the product profile\n' "$TARGET"
+fi
+
+# A probe build writes to the same build directory as the product build. Clearing it
+# is what prevents a stale product-only object (USB descriptors, ADC selftest) from
+# being linked into a probe image after the configuration changes.
+if [[ "$PROFILE" == "probe" && -d "$ROOT/firmware/$TARGET/build" ]]; then
+    rm -rf -- "$ROOT/firmware/$TARGET/build"
+fi
+
+idf.py -C "$ROOT/firmware/$TARGET" -B "$ROOT/firmware/$TARGET/build" \
+    -D "SDKCONFIG_DEFAULTS=$SDKCONFIG_DEFAULTS" build

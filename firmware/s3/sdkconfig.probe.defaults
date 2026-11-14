@@ -1,0 +1,8 @@
+# Stage 3 ESP-NOW probe settings for the ESP32-S3 receiver.
+#
+# Applied by `./firmware/build.sh s3 --probe` on top of sdkconfig.defaults. The probe
+# does not enumerate USB, so TinyUSB stays out of the build entirely and cannot add
+# interrupt load that would pollute the loss and RTT figures.
+CONFIG_MICCLICKER_ESPNOW_PROBE_RECEIVER=y
+CONFIG_MICCLICKER_ESPNOW_PROBE_CHANNEL=1
+CONFIG_TINYUSB_HID_COUNT=0

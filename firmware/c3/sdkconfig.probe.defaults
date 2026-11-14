@@ -1,0 +1,8 @@
+# Stage 3 ESP-NOW probe settings for the AI Passport sender.
+#
+# Applied by `./firmware/build.sh c3 --probe` on top of sdkconfig.defaults. The probe
+# replaces the interactive selftest, so it is a deliberate build-time switch rather
+# than a runtime mode: keeping the two in one binary would leave the ADC phases and
+# the radio task fighting over the same device.
+CONFIG_MICCLICKER_ESPNOW_PROBE_SENDER=y
+CONFIG_MICCLICKER_ESPNOW_PROBE_CHANNEL=1

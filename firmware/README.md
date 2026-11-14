@@ -1,6 +1,6 @@
 # MicClicker 固件工程
 
-当前目录包含第 1 阶段的可重复硬件自检和第 2 阶段的 USB 原型，不是完整产品固件；尚未实现 ESP-NOW、G.722 或 C3 音频采集。USB 原型以 macOS 为首个验证目标，Windows / Linux、热插拔和休眠恢复仍须单独验证。
+当前目录包含第 1 阶段的可重复硬件自检、第 2 阶段的 USB 原型、G.722 组件，以及第 3 阶段的 ESP-NOW 协议层与真机探针。**仍不是完整产品固件**：C3 音频采集、S3 解码缓冲与 USB 输出之间的全链路（第 4 阶段）尚未接起来，配置工具也未开始。USB 原型以 macOS 为首个验证目标，Windows / Linux、热插拔和休眠恢复仍须单独验证。
 
 ## 目录
 
@@ -8,8 +8,14 @@
 - `c3/`：AI Passport / ESP32-C3 自检。执行 Wi-Fi 扫描后，依次采集 RELEASED、UP、DOWN、OK 四个键态的 ADC 数据，输出原始值、噪声、估算/校准电压、窗口裕量和误分类数。
 - `components/wifi_scan/`：两端共享的最小 Wi-Fi 扫描组件，不记录 SSID/BSSID，不自动擦除 NVS。
 - `components/g722/`：G.722 64 kbit/s 编解码组件，内嵌 WebRTC/SpanDSP 的公有领域实现，帧长固定为 320 样本 / 160 字节。
+- `components/link_proto/`：ESP-NOW 应用层帧编解码与序号跟踪，对应 [../docs/protocol.md](../docs/protocol.md)。依赖仅 `esp_common`，可在主机上测试。
+- `components/link_radio/`：ESP-NOW 传输层（Wi-Fi 信道、peer 管理、收发计数），带 `-Werror` 构建。
+- `components/link_bind/`：配对绑定持久化，单条 NVS blob，非法记录拒绝写入；密钥从不打印。
+- `components/link_probe/`：两端 ESP-NOW 探针的收发角色与阶段调度，仅用于第 3 阶段真机验证。
 - `tests/g722/`：G.722 主机侧验证（封装契约 + 黄金向量逐比特比对），不依赖 ESP-IDF 或硬件，详见 `tests/g722/README.md`。
-- `build.sh`：锁定 ESP-IDF v5.5.3 的构建入口。
+- `tests/link_proto/`：无线协议主机侧验证（空口布局、拒绝规则、序号回绕与去重），不依赖 IDF 或硬件。
+- `tests/espnow/`：ESP-NOW 真机探针的判分脚本与实测记录，详见 `tests/espnow/README.md`。
+- `build.sh`：锁定 ESP-IDF v5.5.3 的构建入口，含产品与探针两种配置。
 
 板级引脚和 ADC 阈值集中在 `c3/main/board.h`。S3 的 Flash、PSRAM、控制台及分区配置在 `s3/sdkconfig.defaults` 和 `s3/partitions.csv`，不预设未经确认的原生 USB 引脚。
 
@@ -30,8 +36,13 @@
 ```bash
 ./firmware/build.sh s3   # 默认：USB 复合设备原型
 ./firmware/build.sh c3   # C3 自检（Wi-Fi + 四键态 ADC + G.722）
-./firmware/tests/g722/run.sh   # G.722 主机侧验证，不需要 IDF 或硬件
+./firmware/build.sh s3 --probe   # 第 3 阶段探针：S3 作为接收端
+./firmware/build.sh c3 --probe   # 第 3 阶段探针：C3 作为发送端
+./firmware/tests/g722/run.sh         # G.722 主机侧验证，不需要 IDF 或硬件
+./firmware/tests/link_proto/run.sh   # 无线协议主机侧验证，不需要 IDF 或硬件
 ```
+
+探针是**独立配置**（`sdkconfig.probe.defaults`），不是运行时开关：C3 上它替换交互式自检，S3 上它替换 USB 复合设备，避免同一镜像里两套逻辑争用外设。加 `--probe` 会清空该目标的 `build/`，防止产品配置的目标文件混入探针镜像。恢复产品配置直接不带该参数重建。
 
 复跑 S3 第 1 阶段自检时，先在 `firmware/s3/sdkconfig.defaults` 中加入 `CONFIG_MICCLICKER_STAGE1_SELFTEST=y`，再执行 `./firmware/build.sh s3`；恢复 USB 原型时移除该设置。构建脚本每次都会重新生成 `sdkconfig`，因此切换会完整生效。
 
@@ -119,3 +130,21 @@ vendor 报告使用 **Report ID 0 + 64 字节 payload**，不要换成编号报�
 - alt 0 下 `produced=0`、`usb_packets=0`，不再持续生产；实际发送计数来自 `tud_audio_tx_done_isr`，短写单独统计。TinyUSB 的 EP FIFO 可覆盖旧数据，短写不等于溢出计数，不能把两者混为一谈。
 
 上述主机探针位于 `.tmp/usb-host-prototype-20261114/`，是一次性 macOS 取证工具，不是跨平台产品配置工具。Windows / Linux、热插拔、休眠恢复、至少 30 分钟连续录音和异常采样率 SET_CUR 的驱动层前置校验仍未完成；UAC1 是否需要在 Windows 目标版本上采用也留待后续决定。
+
+## ESP-NOW（第 3 阶段）
+
+协议规范见 [../docs/protocol.md](../docs/protocol.md)，主机侧测试与真机实测数据见 `tests/espnow/README.md`。
+
+已实现：帧编解码与精确长度校验、各类型独立序号与回绕处理、会话切换重置、按键重传去重、心跳与累计计数回复、配对与加密单播、绑定写入 NVS。
+
+2026-11-14 真机实测（C3 → S3，信道 1，1 米直视）：突发 406–507 kbit/s，连续四轮**零丢包**（1311/1311、1385/1385、1416/1416、1312/1312），心跳 RTT 平均 5.7–8.2 ms，20 个按键事件全部应用且 40 次重传全部抑制，配对与加密往返成功，绑定写入成功。信道不匹配时按明确原因失败，没有静默假成功。
+
+**未验证的部分**（不能由上述结果推出）：重启后按旧绑定自动重连、配对过程防中间人（当前配对请求是明文）、传输距离与穿墙、干扰与多信道、以及与音频并发。详见表中「尚未做的部分」。
+
+探针日志抓取与判分：
+
+```bash
+./firmware/tests/espnow/check.sh <sender-log> <receiver-log>
+```
+
+脚本只读日志、不接触硬件，按协议判据输出 `ESPNOW_PROBE: PASS` 或 FAIL。
