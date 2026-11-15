@@ -28,6 +28,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "g722_enc_dec.h"
+#include "key_task.h"
 #include "mic_capture.h"
 #include "mic_g722.h"
 #include "mic_link.h"
@@ -196,13 +197,18 @@ static void audio_task(void *argument)
                      s_stats.frames_encoded, s_stats.frames_sent, s_stats.capture_errors,
                      s_stats.encode_errors, s_stats.send_errors, s_stats.send_retries,
                      s_stats.late_frames, radio.tx_ok, radio.tx_fail, radio.tx_errors);
+
+            // The key counters get their own line so a key-path regression does not
+            // require parsing the audio line, and so the two can be differenced
+            // independently when a run is graded.
+            micclicker_c3_keys_log_status();
         }
     }
 }
 
-// The only inbound traffic the C3 product cares about is a heartbeat reply, which the
-// S3 uses to report its receive-side counters. It is counted, not acted on, so the log
-// on this side can be compared with the S3 log during a link run.
+// Inbound traffic for this end: a heartbeat reply, which is how the S3 reports its
+// receive-side counters, and a key ACK, which is how it confirms a key event. Both are
+// handled without blocking, because this runs in the Wi-Fi task.
 static volatile uint32_t s_hb_acks;
 
 static void on_recv(const uint8_t mac[ESP_NOW_ETH_ALEN], const uint8_t *data, int len, int8_t rssi,
@@ -218,6 +224,19 @@ static void on_recv(const uint8_t mac[ESP_NOW_ETH_ALEN], const uint8_t *data, in
     }
     if (view.header.type == MIC_LINK_TYPE_HEARTBEAT_ACK) {
         ++s_hb_acks;
+        // The reply echoes the heartbeat it answers, which is what makes matching it by
+        // sequence number possible instead of guessing from arrival order.
+        mic_link_heartbeat_ack_t ack;
+        if (mic_link_decode_heartbeat_ack(&view, &ack) == ESP_OK) {
+            micclicker_c3_keys_on_heartbeat_ack(ack.echo_seq);
+        }
+        return;
+    }
+    if (view.header.type == MIC_LINK_TYPE_KEY_ACK) {
+        uint32_t acked_seq = 0;
+        if (mic_link_decode_key_ack(&view, &acked_seq) == ESP_OK) {
+            micclicker_c3_keys_on_ack(acked_seq);
+        }
     }
 }
 
@@ -256,5 +275,15 @@ void micclicker_c3_audio_start(void)
     if (xTaskCreate(audio_task, "mc_c3_audio", C3_AUDIO_TASK_STACK, NULL, C3_AUDIO_TASK_PRIORITY,
                     NULL) != pdPASS) {
         ESP_LOGE(TAG, "C3_AUDIO: FAIL reason=task_create");
+    }
+
+    // Keys come up after the audio task so the first audio frame is not delayed by ADC
+    // calibration, and after pairing so a key pressed during boot has a session to ride.
+    // The session number is shared: every frame this end sends must claim the same session,
+    // or the receiver treats key traffic as a session change on every keystroke.
+    esp_err_t keys_err = micclicker_c3_keys_start(s_session);
+    if (keys_err != ESP_OK) {
+        // Not fatal: audio keeps working, and the log line is what says the keys are dead.
+        ESP_LOGE(TAG, "C3_AUDIO: KEYS_FAIL err=%s", esp_err_to_name(keys_err));
     }
 }

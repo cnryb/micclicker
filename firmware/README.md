@@ -1,6 +1,6 @@
 # MicClicker 固件工程
 
-当前目录包含第 1 阶段的可重复硬件自检、第 2 阶段的 USB 原型、G.722 组件、第 3 阶段的 ESP-NOW 协议层与真机探针，以及**第 4 阶段的音频全链路产品固件**（C3 ES8311 采集 → G.722 → ESP-NOW → S3 解码 → 自适应缓冲 → UAC2 输出，macOS 已打通）。**仍不是完整产品固件**：按键链路（第 5 阶段）、配置工具、运行时映射尚未实现。全链路以 macOS 为首个验证目标，Windows / Linux、热插拔、休眠恢复、ASR 对比与长稳结论仍须单独验证，边界见 `tests/audio_link/README.md` 第 4 节。
+当前目录包含第 1 阶段的可重复硬件自检、第 2 阶段的 USB 原型、G.722 组件、第 3 阶段的 ESP-NOW 协议层与真机探针、**第 4 阶段的音频全链路产品固件**（C3 ES8311 采集 → G.722 → ESP-NOW → S3 解码 → 自适应缓冲 → UAC2 输出），以及**第 5 阶段的按键链路**（C3 ADC 按键 → 同 seq 重传 → S3 映射 → HID 键盘报告，macOS 已打通；完整验收记录仍待补）。**仍不是完整产品固件**：跨平台配置工具、映射的配置命令集与状态显示尚未实现。全链路以 macOS 为首个验证目标，Windows / Linux、热插拔、休眠恢复、ASR 对比与长稳结论仍须单独验证，边界见 `tests/audio_link/README.md` 第 4 节。
 
 ## 目录
 
@@ -14,11 +14,17 @@
 - `components/link_probe/`：两端 ESP-NOW 探针的收发角色与阶段调度，仅用于第 3 阶段真机验证。
 - `components/link_session/`：两端共享的产品侧链路 bring-up：从 NVS 读绑定并按存储信道起 radio，未绑定时才开配对窗口。与探针的关键差别是**正常开机绝不清除绑定**。
 - `components/audio_jitter/`：接收端 PCM 环形缓冲与时钟漂移补偿（有界、溢出丢最旧、欠载遮蔽、高/低水位自适应），带主机侧测试。
+- `components/key_scan/`：C3 侧 ADC 电阻梯窗口分类与去抖（确认 40 ms / 保持 120 ms），主机侧可测。
+- `components/key_tx/`：C3 侧按键可靠投递（同 seq 重传、按序号匹配 ACK、被拒发送不消耗尝试、有界队列），主机侧可测。
+- `components/key_map/`：映射校验、NVS blob 编解码与 HID 报告编码（默认 UP=Left Alt、DOWN=保留、OK=Enter），主机侧可测。
+- `components/key_store/`：S3 侧映射持久化（NVS 命名空间 `mickeys`，单 blob，非法表拒绝写入）。
 - `tests/g722/`：G.722 主机侧验证（封装契约 + 黄金向量逐比特比对），不依赖 ESP-IDF 或硬件，详见 `tests/g722/README.md`。
 - `tests/link_proto/`：无线协议主机侧验证（空口布局、拒绝规则、序号回绕与去重），不依赖 IDF 或硬件。
 - `tests/espnow/`：ESP-NOW 真机探针的判分脚本与实测记录，详见 `tests/espnow/README.md`。
 - `tests/audio_jitter/`：环形缓冲与漂移控制器的主机侧测试，不需要 IDF 或硬件。
 - `tests/audio_link/`：第 4 阶段全链路真机验收的判分脚本与实测记录，详见 `tests/audio_link/README.md`。
+- `tests/key_scan/`、`tests/key_tx/`、`tests/key_map/`：按键纯逻辑组件的主机侧验证，不需要 IDF 或硬件。
+- `tests/key_link/`：第 5 阶段按键链路真机判分（`check.sh` 三日志判分 + macOS IOHIDManager 观察器），详见 `tests/key_link/README.md`。
 - `build.sh`：锁定 ESP-IDF v5.5.3 的构建入口，含产品与探针两种配置。
 
 板级引脚和 ADC 阈值集中在 `c3/main/board.h`。S3 的 Flash、PSRAM、控制台及分区配置在 `s3/sdkconfig.defaults` 和 `s3/partitions.csv`，不预设未经确认的原生 USB 引脚。
@@ -46,6 +52,8 @@
 ./firmware/tests/link_proto/run.sh   # 无线协议主机侧验证，不需要 IDF 或硬件
 ./firmware/tests/audio_jitter/run.sh # 环形缓冲与漂移补偿，不需要 IDF 或硬件
 ./firmware/tests/audio_link/check.sh c3.log s3.log 1800   # 第 4 阶段真机判分
+./firmware/tests/key_scan/run.sh && ./firmware/tests/key_tx/run.sh && ./firmware/tests/key_map/run.sh  # 按键组件主机侧验证
+./firmware/tests/key_link/check.sh c3.log s3.log observer.log   # 第 5 阶段真机判分（三份日志）
 ```
 
 探针是**独立配置**（`sdkconfig.probe.defaults`），不是运行时开关：C3 上它替换交互式自检，S3 上它替换 USB 复合设备，避免同一镜像里两套逻辑争用外设。加 `--probe` 会清空该目标的 `build/`，防止产品配置的目标文件混入探针镜像。恢复产品配置直接不带该参数重建。

@@ -10,6 +10,7 @@
 #include <stdint.h>
 
 #include "mic_jitter.h"
+#include "mic_link.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -43,6 +44,11 @@ void mic_link_audio_get_stats(mic_link_audio_stats_t *out);
 // does not accumulate a backlog that would be reported as overflow. A change in either
 // direction flushes the ring so stale audio is never played.
 void mic_link_audio_set_consuming(bool consuming);
+
+// Park one heartbeat for the product task to answer. Called from the receive callback,
+// which must not send: answering from there re-enters ESP-NOW inside its own callback.
+// `seq` is the sender's heartbeat sequence number, which the reply has to echo.
+void mic_link_audio_note_heartbeat(uint32_t seq, const mic_link_heartbeat_t *beat);
 
 #ifdef __cplusplus
 }

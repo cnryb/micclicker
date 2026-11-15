@@ -1,16 +1,24 @@
-// S3 product role: receive, decode, buffer, output.
+// S3 product role: receive, decode, buffer, output, and drive the keyboard.
 //
-// This is the stage-4 product firmware on the receiver side. It replaces the stage-2
-// prototype's hard-coded 1 kHz sine table with real audio from the link:
+// This is the product firmware on the receiver side. It replaces the stage-2 prototype's
+// hard-coded 1 kHz sine table with real audio from the link:
 //
 //   one ESP-NOW packet  ->  G.722 decode  ->  320 samples  ->  ring  ->  UAC2 endpoint
+//   one ESP-NOW packet  ->  key dedup     ->  key task      ->  HID keyboard report
 //
 // The receive callback runs in the Wi-Fi task, so it does the minimum: validate the
-// frame, decode it when it is the next expected one, and push it into the ring. Anything
-// that could block (logging, key reporting, status) is left to the product task.
+// frame, dispatch it by type, decode audio when it is not a duplicate, and queue key
+// events. Anything that could block (logging, USB reports, sending ACKs) is left to a
+// task.
 //
-// Sequence handling follows docs/protocol.md: audio is never retransmitted, a gap is
-// concealed rather than waited on, and effective loss is holes minus late arrivals.
+// Sequence handling follows docs/protocol.md: audio is never retransmitted and a gap is
+// concealed rather than waited on; key events are retransmitted by the sender under the
+// same sequence number and are suppressed here as duplicates.
+//
+// The link also has to prove it is alive. The sender's heartbeat is the only inbound
+// traffic that arrives when nothing else happens, so it doubles as the liveness signal:
+// after LINK_TIMEOUT_MS of silence every held key is released, because the sender can no
+// longer be trusted to send the matching releases (AGENTS.md section 4).
 
 #include "mic_link_audio.h"
 
@@ -25,7 +33,9 @@
 #include "freertos/task.h"
 #include "mic_g722.h"
 #include "mic_jitter.h"
+#include "mic_key_map.h"
 #include "mic_link.h"
+#include "mic_link_keys.h"
 #include "mic_radio.h"
 #include "mic_session.h"
 
@@ -37,6 +47,15 @@ static const char *TAG = "s3_audio";
 #define S3_RX_TASK_STACK 4096
 #define S3_RX_TASK_PRIORITY 6
 
+// How long the link may stay silent before every held key is released. The sender
+// heartbeats once a second, so three seconds tolerates two lost beats before declaring
+// the link dead; it is short enough that a user whose C3 died does not keep a stuck
+// modifier for long enough to notice it as a bug in the host application instead.
+#define S3_LINK_TIMEOUT_US (3000 * 1000)
+// Re-announcing an already-timed-out link every second would fill the log during a long
+// outage, so the timeout is reported once per outage.
+#define S3_LINK_TIMEOUT_REPEAT_US (10 * 1000 * 1000)
+
 typedef struct {
     uint32_t audio_rx;
     uint32_t audio_dup;
@@ -47,6 +66,7 @@ typedef struct {
     uint32_t rejected;
     uint32_t heartbeats;
     uint32_t heartbeat_replies;
+    uint32_t key_frames;
 } s3_rx_stats_t;
 
 static s3_rx_stats_t s_stats;
@@ -56,6 +76,10 @@ static mic_link_session_t s_sessions;
 // The ring is written by the Wi-Fi task and read by the USB side, so the helper that
 // exposes it is the only handoff between the two.
 static int64_t s_last_audio_us;
+static int64_t s_last_rx_us;
+static volatile bool s_link_lost;
+static int64_t s_link_lost_reported_us;
+
 
 // Heartbeat replies have their own sequence counter (docs/protocol.md section 3.2), and
 // only the product task writes it, so no lock is needed for it.
@@ -99,7 +123,57 @@ void mic_link_audio_set_consuming(bool consuming)
     }
 }
 
-// The receive callback. Wi-Fi task context: no logging, no NVS, no allocation.
+// Adopt the sender's session, resetting everything that is scoped to it.
+//
+// Both traffic types carry the session, and a session change has to be seen even when the
+// first frame of the new session happens to be a key event rather than audio. Reset state
+// is therefore keyed off this one place.
+static void adopt_session(uint16_t session)
+{
+    if (!mic_link_session_adopt(&s_sessions, session)) {
+        return;
+    }
+    s_stats.audio_rx = 0;
+    s_stats.audio_dup = 0;
+    s_stats.audio_decode_errors = 0;
+    mic_jitter_flush(&s_ring);
+    // The decoder holds filter state from the previous session. Resetting it keeps the
+    // first frame from inheriting stale history.
+    mic_g722_decoder_init(&s_decoder);
+    // Queued key events belong to the session that just ended and their sequence numbers
+    // will be reused, so they must be dropped rather than applied.
+    mic_link_keys_on_session_change();
+    ESP_EARLY_LOGI(TAG, "S3_AUDIO: SESSION_NEW session=%u", (unsigned)session);
+}
+
+// Any valid frame from the bound peer proves the link is alive, whatever its type.
+static void note_alive(int64_t now_us)
+{
+    s_last_rx_us = now_us;
+    s_link_lost = false;
+}
+
+static void handle_key_frame(const mic_link_view_t *view)
+{
+    ++s_stats.key_frames;
+    mic_link_key_t key;
+    if (mic_link_decode_key(view, &key) != ESP_OK) {
+        ++s_stats.rejected;
+        return;
+    }
+    if (mic_link_seq_is_duplicate(&s_sessions.key, view->header.seq)) {
+        // A retransmission of an event already applied. It is counted and observed (so
+        // the tracker keeps moving) but must not change the held state: that is the whole
+        // point of retransmitting under the same sequence number.
+        mic_link_keys_note_duplicate();
+        mic_link_seq_observe(&s_sessions.key, view->header.seq);
+        return;
+    }
+    mic_link_seq_observe(&s_sessions.key, view->header.seq);
+    mic_link_keys_on_event(view->header.session, view->header.seq, key.key_id, key.event);
+}
+
+// The receive callback. Wi-Fi task context: no logging, no NVS, no allocation, no USB.
 static void on_audio_frame(const uint8_t mac[ESP_NOW_ETH_ALEN], const uint8_t *data, int len,
                            int8_t rssi, void *context)
 {
@@ -113,30 +187,43 @@ static void on_audio_frame(const uint8_t mac[ESP_NOW_ETH_ALEN], const uint8_t *d
         return;
     }
 
+    int64_t now_us = esp_timer_get_time();
+    note_alive(now_us);
+
     if (view.header.type == MIC_LINK_TYPE_HEARTBEAT) {
         ++s_stats.heartbeats;
-        return;  // answered by the product task, which may log
+        // Hand it to the product task with the sender's sequence number attached: the
+        // reply has to echo that number, and answering from here would re-enter ESP-NOW
+        // inside its own receive callback.
+        mic_link_heartbeat_t beat = {.phase = 0, .mode = MIC_LINK_HEARTBEAT_MODE_PROBE,
+                                     .flags = 0};
+        if (mic_link_decode_heartbeat(&view, &beat) == ESP_OK) {
+            mic_link_audio_note_heartbeat(view.header.seq, &beat);
+        }
+        return;
     }
 
-    if (view.header.type != MIC_LINK_TYPE_AUDIO) {
-        // Keys, ACKs and pairing frames are not part of the stage-4 audio chain. They
-        // are counted as rejected here so the audio counters stay honest, and stage 5
-        // will give them their own path.
+    if (view.header.type == MIC_LINK_TYPE_KEY_ACK) {
+        // This end acknowledges key events; it never receives acknowledgements. A frame
+        // claiming otherwise is a configuration mismatch between the two ends.
         ++s_stats.rejected;
         return;
     }
 
     // A new session restarts the sender's numbering, so the trackers and the ring both
     // have to be reset or the first frames of the new session look like a huge gap.
-    if (mic_link_session_adopt(&s_sessions, view.header.session)) {
-        s_stats.audio_rx = 0;
-        s_stats.audio_dup = 0;
-        s_stats.audio_decode_errors = 0;
-        mic_jitter_flush(&s_ring);
-        // The decoder holds filter state from the previous session. Resetting it keeps
-        // the first frame from inheriting stale history.
-        mic_g722_decoder_init(&s_decoder);
-        ESP_EARLY_LOGI(TAG, "S3_AUDIO: SESSION_NEW session=%u", (unsigned)view.header.session);
+    adopt_session(view.header.session);
+
+    if (view.header.type == MIC_LINK_TYPE_KEY) {
+        handle_key_frame(&view);
+        return;
+    }
+
+    if (view.header.type != MIC_LINK_TYPE_AUDIO) {
+        // Anything else (pairing traffic is intercepted by link_session before it gets
+        // here) is not part of the product chain.
+        ++s_stats.rejected;
+        return;
     }
 
     if (mic_link_seq_is_duplicate(&s_sessions.audio, view.header.seq)) {
@@ -165,13 +252,14 @@ static void on_audio_frame(const uint8_t mac[ESP_NOW_ETH_ALEN], const uint8_t *d
     // actually being drained. Queuing into an idle ring would just evict older frames
     // and report overflow that no listener ever experienced.
     if (s_consuming) {
-        mic_jitter_put(&s_ring, pcm, MIC_G722_FRAME_SAMPLES, esp_timer_get_time());
+        mic_jitter_put(&s_ring, pcm, MIC_G722_FRAME_SAMPLES, now_us);
     }
-    s_last_audio_us = esp_timer_get_time();
+    s_last_audio_us = now_us;
 }
 
 // Answer a heartbeat with the receiver's cumulative counters, which is what the sender
-// diffs into per-window figures (docs/protocol.md section 3.4).
+// diffs into per-window figures (docs/protocol.md section 3.4). The key counters ride the
+// same reply, so the sender can confirm an event was applied without extra traffic.
 static void send_heartbeat_reply(const mic_link_heartbeat_t *beat, uint32_t echo_seq)
 {
     mic_link_heartbeat_ack_t ack;
@@ -184,8 +272,13 @@ static void send_heartbeat_reply(const mic_link_heartbeat_t *beat, uint32_t echo
     ack.audio_dup = s_stats.audio_dup;
     ack.audio_gap = s_sessions.audio.holes;
     ack.audio_late = s_sessions.audio.late;
-    ack.key_rx = 0;
-    ack.key_dup = 0;
+
+    mic_link_key_stats_t keys;
+    mic_link_keys_get_stats(&keys);
+    // key_rx counts events that changed the held state; key_dup counts retransmissions
+    // suppressed. Together they account for every KEY frame received.
+    ack.key_rx = keys.events_applied;
+    ack.key_dup = keys.duplicates;
     ack.rejected = s_stats.rejected;
 
     mic_link_frame_t frame;
@@ -202,14 +295,32 @@ static void send_heartbeat_reply(const mic_link_heartbeat_t *beat, uint32_t echo
 // callback would re-enter ESP-NOW).
 //
 // Heartbeat frames are counted in the callback and answered here from a snapshot, so a
-// missed heartbeat costs one log line rather than a radio deadlock.
+// missed heartbeat costs one log line rather than a radio deadlock. The pending heartbeat
+// keeps the sender's sequence number, because the reply must echo it: matching by arrival
+// order would let a stale reply be counted as the answer to the current beat.
 static volatile bool s_heartbeat_pending;
+static volatile uint32_t s_pending_beat_seq;
+static volatile mic_link_heartbeat_t s_pending_beat;
+
+void mic_link_audio_note_heartbeat(uint32_t seq, const mic_link_heartbeat_t *beat)
+{
+    if (beat != NULL) {
+        s_pending_beat = *beat;
+    }
+    s_pending_beat_seq = seq;
+    s_heartbeat_pending = true;
+}
 
 static void status_task(void *argument)
 {
     (void)argument;
 
     int64_t next_status_us = esp_timer_get_time() + S3_STATUS_PERIOD_US;
+    // The silence timer only starts once a frame has actually arrived in this session.
+    // Arming it at boot would report a timeout for the ordinary case of this end finishing
+    // its own boot before the sender does, and "no link yet" is not the same failure as
+    // "the link died": with nothing held, releasing keys is a no-op anyway.
+    s_last_rx_us = 0;
 
     for (;;) {
         vTaskDelay(pdMS_TO_TICKS(20));
@@ -218,8 +329,19 @@ static void status_task(void *argument)
 
         if (s_heartbeat_pending) {
             s_heartbeat_pending = false;
-            mic_link_heartbeat_t beat = {.phase = 0, .mode = MIC_LINK_HEARTBEAT_MODE_PROBE, .flags = 0};
-            send_heartbeat_reply(&beat, 0);
+            mic_link_heartbeat_t beat = s_pending_beat;
+            send_heartbeat_reply(&beat, s_pending_beat_seq);
+        }
+
+        // A silent link cannot deliver the releases for keys it already pressed. Releasing
+        // here is what turns "the C3 was unplugged" into a bounded stuck key instead of an
+        // indefinite one (AGENTS.md section 4).
+        if (!s_link_lost && s_last_rx_us != 0 && now - s_last_rx_us > S3_LINK_TIMEOUT_US) {
+            s_link_lost = true;
+            s_link_lost_reported_us = now;
+            ESP_LOGW(TAG, "S3_AUDIO: LINK_TIMEOUT silent_ms=%" PRId64,
+                     (now - s_last_rx_us) / 1000);
+            mic_link_keys_on_link_lost();
         }
 
         if (now >= next_status_us) {
@@ -231,6 +353,8 @@ static void status_task(void *argument)
             mic_radio_get_stats(&radio);
             mic_session_info_t info;
             mic_session_get(&info);
+            mic_link_key_stats_t keys;
+            mic_link_keys_get_stats(&keys);
 
             uint32_t effective_loss =
                 s_sessions.audio.holes > s_sessions.audio.late
@@ -238,17 +362,32 @@ static void status_task(void *argument)
                     : 0;
 
             ESP_LOGI(TAG,
-                     "S3_AUDIO: STATUS paired=%d fill_ms=%u rx=%" PRIu32 " dup=%" PRIu32
+                     "S3_AUDIO: STATUS paired=%d link=%s fill_ms=%u rx=%" PRIu32 " dup=%" PRIu32
                      " decoded=%" PRIu32 " gap=%" PRIu32 " late=%" PRIu32 " loss=%" PRIu32
                      " decode_err=%" PRIu32 " rejected=%" PRIu32 " underruns=%" PRIu32
                      " overruns=%" PRIu32 " plc=%" PRIu32 " drops=%" PRIu32 " repeats=%" PRIu32
                      " max_fill=%u min_fill=%u tx_ok=%" PRIu32 " rx_frames=%" PRIu32,
-                     info.paired ? 1 : 0, mic_jitter_fill_ms(&s_ring), s_stats.audio_rx,
-                     s_stats.audio_dup, s_stats.audio_decoded, s_sessions.audio.holes,
-                     s_sessions.audio.late, effective_loss, s_stats.audio_decode_errors,
-                     s_stats.rejected, jitter.take_underruns, jitter.put_overruns, jitter.plc_frames,
-                     jitter.splice_drops, jitter.splice_repeats, jitter.max_fill_ms,
-                     jitter.min_fill_ms, radio.tx_ok, radio.rx_frames);
+                     info.paired ? 1 : 0, s_link_lost ? "down" : "up", mic_jitter_fill_ms(&s_ring),
+                     s_stats.audio_rx, s_stats.audio_dup, s_stats.audio_decoded,
+                     s_sessions.audio.holes, s_sessions.audio.late, effective_loss,
+                     s_stats.audio_decode_errors, s_stats.rejected, jitter.take_underruns,
+                     jitter.put_overruns, jitter.plc_frames, jitter.splice_drops,
+                     jitter.splice_repeats, jitter.max_fill_ms, jitter.min_fill_ms, radio.tx_ok,
+                     radio.rx_frames);
+
+            // The key counters get their own line: the audio line is already long, and a
+            // key-path regression should not require parsing fifteen audio fields to spot.
+            ESP_LOGI(TAG,
+                     "S3_KEYS: STATUS frames=%" PRIu32 " rx=%" PRIu32 " applied=%" PRIu32
+                     " dup=%" PRIu32 " reports=%" PRIu32 " retried=%" PRIu32 " ack=%" PRIu32
+                     " ack_fail=%" PRIu32 " all_up=%" PRIu32 " timeouts=%" PRIu32
+                     " dropped=%" PRIu32 " invalid=%" PRIu32 " pending=%" PRIu32
+                     " down=0x%02x gen=%u",
+                     s_stats.key_frames, keys.events_rx, keys.events_applied,
+                     keys.duplicates, keys.reports, keys.reports_retried, keys.acks_sent,
+                     keys.ack_failures, keys.all_up, keys.timeouts, keys.dropped, keys.invalid,
+                     (unsigned)keys.pending, (unsigned)mic_link_keys_down_mask(),
+                     (unsigned)keys.map_generation);
 
             if (now - s_last_audio_us > 3000000 && s_stats.audio_rx > 0) {
                 ESP_LOGW(TAG, "S3_AUDIO: SILENT_3S no audio for over 3 s; check the C3 sender");

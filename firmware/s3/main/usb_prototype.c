@@ -17,6 +17,7 @@
 #include "freertos/task.h"
 #include "mic_jitter.h"
 #include "mic_link_audio.h"
+#include "mic_link_keys.h"
 #include "tinyusb.h"
 #include "tinyusb_default_config.h"
 #include "usb_descriptors.h"
@@ -32,7 +33,6 @@
 #define MIC_RESULT_QUEUE_FULL 3
 #define MIC_RESULT_NOT_READY 4
 
-#define MIC_LEFT_ALT_MODIFIER 0x04
 #define MIC_KEY_HOLD_MS 50
 #define MIC_AUDIO_FRAMES_PER_MS 16
 
@@ -42,7 +42,6 @@ static QueueHandle_t s_command_queue;
 static volatile uint8_t s_last_command;
 static volatile uint8_t s_last_result;
 static volatile bool s_config_error;
-static volatile bool s_all_up_pending = true;
 static volatile bool s_alt_pressed;
 static volatile bool s_enter_pressed;
 static volatile uint32_t s_ping_count;
@@ -117,52 +116,37 @@ static void fill_status_report(uint8_t *buffer)
 
 static bool send_all_keys_up(void)
 {
-    s_all_up_pending = true;
-    if (!tud_hid_n_ready(MIC_HID_KEYBOARD_INSTANCE)) {
-        return false;
-    }
-    bool ok = tud_hid_n_keyboard_report(MIC_HID_KEYBOARD_INSTANCE, 0, 0, NULL);
-    if (ok) {
-        s_alt_pressed = false;
-        s_enter_pressed = false;
-        s_all_up_pending = false;
-        ++s_all_up_count;
-    }
-    return ok;
+    // All keys up is not "send a zero report next to the key path"; it has to go through
+    // the same state machine that owns the report, or the two writers race and the host
+    // can end up holding a key the firmware thinks is released.
+    //
+    // The release is issued here and emitted by the key task, which retries until the host
+    // polls. That is why this returns as soon as the request is queued rather than waiting
+    // for the endpoint: the request itself cannot be lost.
+    mic_link_keys_release_all("usb_request");
+    s_alt_pressed = false;
+    s_enter_pressed = false;
+    ++s_all_up_count;
+    return true;
 }
 
 static bool send_test_key(uint8_t command)
 {
-    for (int wait_ms = 0; wait_ms < 50 && !tud_hid_n_ready(MIC_HID_KEYBOARD_INSTANCE); ++wait_ms) {
-        vTaskDelay(pdMS_TO_TICKS(1));
-    }
-    if (!tud_hid_n_ready(MIC_HID_KEYBOARD_INSTANCE)) {
-        send_all_keys_up();
-        return false;
-    }
-
-    bool ok;
-    if (command == MIC_CMD_LEFT_ALT) {
-        ok = tud_hid_n_keyboard_report(MIC_HID_KEYBOARD_INSTANCE, 0, MIC_LEFT_ALT_MODIFIER, NULL);
-        if (ok) {
-            s_alt_pressed = true;
-            ++s_alt_count;
-        }
-    } else {
-        const uint8_t keycode[6] = {HID_KEY_ENTER, 0, 0, 0, 0, 0};
-        ok = tud_hid_n_keyboard_report(MIC_HID_KEYBOARD_INSTANCE, 0, 0, keycode);
-        if (ok) {
-            s_enter_pressed = true;
-            ++s_enter_count;
-        }
-    }
-    if (!ok) {
-        send_all_keys_up();
-        return false;
-    }
-
+    uint8_t key_id = command == MIC_CMD_LEFT_ALT ? MIC_KEY_ID_UP : MIC_KEY_ID_OK;
+    // Press then release through the mapping, so the test exercises the same table the
+    // device actually uses rather than a hard-coded Alt/Enter pair. The hold is what makes
+    // the pair observable to a host that samples at frame rate.
+    mic_link_keys_self_test(key_id, MIC_KEY_EVENT_PRESS);
     vTaskDelay(pdMS_TO_TICKS(MIC_KEY_HOLD_MS));
-    return send_all_keys_up();
+    mic_link_keys_self_test(key_id, MIC_KEY_EVENT_RELEASE);
+    if (command == MIC_CMD_LEFT_ALT) {
+        s_alt_pressed = true;
+        ++s_alt_count;
+    } else {
+        s_enter_pressed = true;
+        ++s_enter_count;
+    }
+    return true;
 }
 
 static void command_task(void *argument)
@@ -171,9 +155,6 @@ static void command_task(void *argument)
     for (;;) {
         uint8_t command = 0;
         if (xQueueReceive(s_command_queue, &command, pdMS_TO_TICKS(10)) != pdTRUE) {
-            if (s_all_up_pending) {
-                send_all_keys_up();
-            }
             continue;
         }
 
@@ -272,11 +253,14 @@ static void usb_event_handler(tinyusb_event_t *event, void *argument)
 {
     (void)argument;
     if (event->id == TINYUSB_EVENT_ATTACHED) {
-        send_all_keys_up();
+        // A freshly attached host knows nothing about the keys this end may be holding,
+        // and TinyUSB starts each attach with an empty report. Clearing the local state is
+        // what keeps the two views equal.
+        mic_link_keys_on_usb_reset();
         s_audio_streaming = false;
         tud_audio_clear_ep_in_ff();
     } else if (event->id == TINYUSB_EVENT_DETACHED) {
-        s_all_up_pending = true;
+        mic_link_keys_on_usb_reset();
         s_audio_streaming = false;
     }
 }
@@ -284,13 +268,15 @@ static void usb_event_handler(tinyusb_event_t *event, void *argument)
 void tud_suspend_cb(bool remote_wakeup_en)
 {
     (void)remote_wakeup_en;
-    s_all_up_pending = true;
+    // A suspended host stops polling, so a held modifier would survive the sleep on the
+    // host's side and reappear after resume. Release before that can happen.
+    mic_link_keys_on_usb_reset();
     s_audio_streaming = false;
 }
 
 void tud_resume_cb(void)
 {
-    send_all_keys_up();
+    mic_link_keys_on_usb_reset();
 }
 
 static void update_effective_gain(void)
@@ -578,8 +564,16 @@ void micclicker_usb_prototype_start(void)
     }
 
     // Bring the link receiver up after USB installs but before the audio task runs, so
-    // the first UAC read already has a valid ring rather than a NULL dereference.
+    // the first UAC read already has a valid ring rather than a NULL dereference; the key
+    // path comes next so a key event that arrives with the first frames has a task to
+    // land on.
     micclicker_s3_audio_start();
+    esp_err_t keys_err = micclicker_s3_keys_start();
+    if (keys_err != ESP_OK) {
+        // Not fatal: audio and the config channel keep working, and the log line is what
+        // says the keyboard is dead.
+        ESP_LOGE(TAG, "USB_PROTOTYPE: KEYS_FAIL err=%s", esp_err_to_name(keys_err));
+    }
 
     TaskHandle_t command_handle = NULL;
     TaskHandle_t audio_handle = NULL;
@@ -593,7 +587,9 @@ void micclicker_usb_prototype_start(void)
         return;
     }
 
-    ESP_LOGI(TAG, "USB_PROTOTYPE: READY audio=16000Hz/16bit/mono source=link hid=keyboard+config");
+    ESP_LOGI(TAG,
+             "USB_PROTOTYPE: READY audio=16000Hz/16bit/mono source=link hid=keyboard+config "
+             "keys=link");
 }
 
 #endif // !CONFIG_MICCLICKER_STAGE1_SELFTEST
