@@ -73,7 +73,8 @@ static void key_event(void *context, IOReturn result, void *sender, IOHIDValueRe
     // rather than counted as an "up" for usage 0.
     if (usage >= 0xE0 && usage <= 0xE7) {
         // Modifier bits: track which ones were seen so the summary can show the report
-        // really carried Left Alt rather than an ordinary key.
+        // really carried a modifier (Right Alt for UP by default) rather than an
+        // ordinary key.
         if (state) {
             s_mods_seen |= (uint8_t)(1u << (usage - 0xE0));
         }

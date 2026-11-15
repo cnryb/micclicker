@@ -16,7 +16,7 @@
 - `components/audio_jitter/`：接收端 PCM 环形缓冲与时钟漂移补偿（有界、溢出丢最旧、欠载遮蔽、高/低水位自适应），带主机侧测试。
 - `components/key_scan/`：C3 侧 ADC 电阻梯窗口分类与去抖（确认 40 ms / 保持 120 ms），主机侧可测。
 - `components/key_tx/`：C3 侧按键可靠投递（同 seq 重传、按序号匹配 ACK、被拒发送不消耗尝试、有界队列），主机侧可测。
-- `components/key_map/`：映射校验、NVS blob 编解码与 HID 报告编码（默认 UP=Left Alt、DOWN=保留、OK=Enter），主机侧可测。
+- `components/key_map/`：映射校验、NVS blob 编解码与 HID 报告编码（默认 UP=Right Alt、DOWN=保留、OK=Enter），主机侧可测。
 - `components/key_store/`：S3 侧映射持久化（NVS 命名空间 `mickeys`，单 blob，非法表拒绝写入）。
 - `tests/g722/`：G.722 主机侧验证（封装契约 + 黄金向量逐比特比对），不依赖 ESP-IDF 或硬件，详见 `tests/g722/README.md`。
 - `tests/link_proto/`：无线协议主机侧验证（空口布局、拒绝规则、序号回绕与去重），不依赖 IDF 或硬件。
@@ -131,7 +131,7 @@ vendor 报告使用 **Report ID 0 + 64 字节 payload**，不要换成编号报�
 | 命令 | 含义 |
 | :--- | :--- |
 | `0x01` | ping，递增计数 |
-| `0x02` | Left Alt 按下，随后释放 |
+| `0x02` | 触发 UP 绑定按下，随后释放（当前默认映射为 Right Alt） |
 | `0x03` | Enter 按下，随后释放 |
 | `0x04` | 全部按键释放 |
 

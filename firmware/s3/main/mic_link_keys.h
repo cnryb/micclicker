@@ -89,7 +89,7 @@ void mic_link_keys_on_usb_reset(void);
 // state it was in.
 esp_err_t mic_link_keys_apply_map(const mic_key_map_t *map);
 
-// Restore the design defaults (UP = Left Alt, DOWN = reserved, OK = Enter) and persist.
+// Restore the design defaults (UP = Right Alt, DOWN = reserved, OK = Enter) and persist.
 esp_err_t mic_link_keys_reset_map(void);
 
 const mic_key_map_t *mic_link_keys_map(void);

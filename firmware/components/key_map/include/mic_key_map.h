@@ -9,7 +9,7 @@
 // all-keys-up") checkable on the host in firmware/tests/key_map, and it keeps the panel
 // that writes NVS (mic_key_store) from also owning the interpretation of a report.
 //
-// Defaults are the design baseline: UP = Left Alt, DOWN = reserved (no output),
+// Defaults are the design baseline: UP = Right Alt, DOWN = reserved (no output),
 // OK = Enter.
 
 #include <stdbool.h>
@@ -79,7 +79,7 @@ esp_err_t mic_key_binding_validate(const mic_key_binding_t *binding);
 // individually valid. Returns ESP_ERR_INVALID_STATE when a table is only partly filled.
 esp_err_t mic_key_map_validate(const mic_key_map_t *map);
 
-// Fill in the design defaults (UP = Left Alt, DOWN = reserved, OK = Enter).
+// Fill in the design defaults (UP = Right Alt, DOWN = reserved, OK = Enter).
 void mic_key_map_defaults(mic_key_map_t *map);
 
 // Append the binding for `key_id`, or NULL when the table has no such key.

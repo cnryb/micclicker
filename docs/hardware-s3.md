@@ -8,7 +8,7 @@
 
 2026-11-14 自检固件进一步通过：8 MB octal PSRAM 初始化及两轮写读、Wi-Fi STA 扫描、运行态 GPIO0 / BOOT 长按 3 秒。结果与边界见第 6 节。
 
-同日 **macOS USB 复合设备原型通过**：UAC2 麦克风、标准键盘 HID 和独立 vendor 配置 HID 已并发完成录音、成对 Left Alt / Enter 与配置通信，见第 6.2 节。
+同日 **macOS USB 复合设备原型通过**：UAC2 麦克风、标准键盘 HID 和独立 vendor 配置 HID 已并发完成录音、成对 Alt / Enter（当时默认映射为 Left Alt）与配置通信，见第 6.2 节。
 
 **仍未验证**：Windows / Linux、热插拔与休眠恢复、长时带负载供电余量与发热。BLE 不在首版范围内，未做专项验证。
 
@@ -154,7 +154,7 @@ idf.py -C firmware/s3 -p /dev/cu.usbmodem5D4D0449961 monitor -b 115200
 | 功能 | 实现与实测 |
 | :--- | :--- |
 | UAC2 麦克风 | 16 kHz、16-bit 小端 PCM、单声道、1 kHz 已知正弦波；等步 IN `0x81`，最大包 34 B，应用每毫秒写 32 B，FIFO 272 B |
-| 标准键盘 HID | 独立 instance 0 / USB 接口 2，中断 IN `0x82`；Left Alt 使用 modifier，Enter 使用 `0x28`，按下/释放成对，all-keys-up 遇忙保留 pending 并重试 |
+| 标准键盘 HID | 独立 instance 0 / USB 接口 2，中断 IN `0x82`；Alt（当时默认映射为 Left Alt，现为 Right Alt）使用 modifier，Enter 使用 `0x28`，按下/释放成对，all-keys-up 遇忙保留 pending 并重试 |
 | vendor 配置 HID | 独立 instance 1 / USB 接口 3，Report ID 0、64 B payload，OUT `0x03` / IN `0x83`；配置命令有界入队，GET_REPORT 返回版本、状态和计数，非法命令返回错误 |
 | 调试日志 | 继续使用独立 CH343 UART，不增加 CDC/MIDI |
 

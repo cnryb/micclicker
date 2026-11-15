@@ -44,8 +44,8 @@ static void test_defaults(void)
     const mic_key_binding_t *up = mic_key_map_find(&map, MIC_KEY_ID_UP);
     const mic_key_binding_t *down = mic_key_map_find(&map, MIC_KEY_ID_DOWN);
     const mic_key_binding_t *ok = mic_key_map_find(&map, MIC_KEY_ID_OK);
-    check(up != NULL && up->modifier == MIC_HID_MOD_LEFT_ALT && up->keycode == MIC_HID_KEYCODE_NONE,
-          "UP defaults to Left Alt alone");
+    check(up != NULL && up->modifier == MIC_HID_MOD_RIGHT_ALT && up->keycode == MIC_HID_KEYCODE_NONE,
+          "UP defaults to Right Alt alone");
     check(down != NULL && down->modifier == 0 && down->keycode == MIC_HID_KEYCODE_NONE,
           "DOWN is reserved (no output)");
     check(ok != NULL && ok->modifier == 0 && ok->keycode == MIC_HID_KEY_ENTER,
@@ -73,7 +73,7 @@ static void test_validation(void)
 
     binding.keycode = MIC_HID_KEYCODE_NONE;
     check(mic_key_binding_validate(&binding) == ESP_OK, "no-output binding is valid");
-    binding.modifier = MIC_HID_MOD_LEFT_ALT;
+    binding.modifier = MIC_HID_MOD_RIGHT_ALT;
     check(mic_key_binding_validate(&binding) == ESP_OK, "modifier-only binding is valid");
 
     binding.key_id = 0x09;
@@ -156,10 +156,10 @@ static void test_state_machine(void)
 
     check(mic_key_state_apply(&state, MIC_KEY_ID_UP, MIC_KEY_EVENT_PRESS), "UP press changes state");
     check(mic_key_state_any_down(&state), "UP is held");
-    check_report(&state, MIC_HID_MOD_LEFT_ALT, none, "UP reports the Left Alt modifier");
+    check_report(&state, MIC_HID_MOD_RIGHT_ALT, none, "UP reports the Right Alt modifier");
 
     check(!mic_key_state_apply(&state, MIC_KEY_ID_UP, MIC_KEY_EVENT_PRESS), "repeat press is absorbed");
-    check_report(&state, MIC_HID_MOD_LEFT_ALT, none, "repeat press does not change the report");
+    check_report(&state, MIC_HID_MOD_RIGHT_ALT, none, "repeat press does not change the report");
 
     check(mic_key_state_apply(&state, MIC_KEY_ID_UP, MIC_KEY_EVENT_RELEASE), "UP release changes state");
     check_report(&state, 0, none, "release returns to all-zero");
@@ -183,7 +183,7 @@ static void test_modifier_union(void)
     mic_key_map_t map;
     mic_key_map_defaults(&map);
     // A table where both UP and OK carry modifiers, so holding both must OR them.
-    map.bindings[0].modifier = MIC_HID_MOD_LEFT_ALT;
+    map.bindings[0].modifier = MIC_HID_MOD_RIGHT_ALT;
     map.bindings[0].keycode = 0x04;
     map.bindings[2].modifier = MIC_HID_MOD_LEFT_SHIFT;
     map.bindings[2].keycode = 0x05;
@@ -196,7 +196,7 @@ static void test_modifier_union(void)
 
     uint8_t report[MIC_HID_KEYBOARD_REPORT_BYTES];
     mic_key_state_report(&state, report);
-    check(report[0] == (MIC_HID_MOD_LEFT_ALT | MIC_HID_MOD_LEFT_SHIFT),
+    check(report[0] == (MIC_HID_MOD_RIGHT_ALT | MIC_HID_MOD_LEFT_SHIFT),
           "held modifiers are OR'd into one byte");
     // Key-id order: UP (id 1) fills slot 0, OK (id 3) fills slot 1. Consistent ordering
     // matters because the host treats a reordered report as a new event.

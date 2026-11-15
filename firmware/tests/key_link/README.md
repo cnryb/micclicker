@@ -15,7 +15,7 @@ GPIO0 ADC 电阻梯                                     UAC2 + HID 键盘
          └─ S3 断链超时 3 s → all-keys-up               └─ tud_hid_n_keyboard_report
 ```
 
-两端均为产品固件（`./firmware/build.sh c3` 与 `./firmware/build.sh s3`）。默认映射：UP = Left Alt（仅修饰键）、DOWN = 保留（无输出）、OK = Enter；映射持久化在 S3 的 NVS（独立命名空间 `mickeys`，与配对绑定 `miclink` 互不干扰）。
+两端均为产品固件（`./firmware/build.sh c3` 与 `./firmware/build.sh s3`）。默认映射：UP = Right Alt（仅修饰键）、DOWN = 保留（无输出）、OK = Enter；映射持久化在 S3 的 NVS（独立命名空间 `mickeys`，与配对绑定 `miclink` 互不干扰）。
 
 ## 2. 判分脚本
 
