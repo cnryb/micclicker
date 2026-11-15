@@ -1,12 +1,31 @@
 menu "MicClicker C3"
 
-config MICCLICKER_ESPNOW_PROBE_SENDER
-    bool "Run the ESP-NOW probe as the sender instead of the hardware selftest"
-    default n
+choice MICCLICKER_C3_ROLE
+    prompt "C3 firmware role"
+    default MICCLICKER_ROLE_AUDIO_LINK
+
+config MICCLICKER_ROLE_AUDIO_LINK
+    bool "Audio link (capture, G.722 encode, ESP-NOW send)"
     help
-        Replaces the G.722 / Wi-Fi / ADC selftest with the stage-3 ESP-NOW probe:
-        discovery, burst audio, paced audio, key retransmission, pairing and an
-        encrypted round trip. Pair with the S3 receiver probe on the same channel.
+        The stage-4 product role: capture 16 kHz mono from the ES8311, encode one
+        20 ms G.722 frame per ESP-NOW packet, and send it to the bound S3 peer over
+        encrypted unicast. Pairs on first boot when no binding exists.
+
+config MICCLICKER_ROLE_SELFTEST
+    bool "Hardware selftest (Wi-Fi scan, ADC buttons, G.722 vector)"
+    help
+        The stage-1 selftest: scans Wi-Fi, then prompts for the four button states and
+        reports ADC voltages. Needs a human at the device. It does not touch the codec,
+        the radio link or NVS bindings.
+
+config MICCLICKER_ESPNOW_PROBE_SENDER
+    bool "ESP-NOW probe sender (stage 3 measurement)"
+    help
+        The stage-3 probe: discovery, burst audio, paced audio, key retransmission,
+        pairing and an encrypted round trip. Erases any stored binding on every boot,
+        which product roles must never do. Selected by `./firmware/build.sh c3 --probe`.
+
+endchoice
 
 config MICCLICKER_ESPNOW_PROBE_CHANNEL
     int "ESP-NOW probe channel (2.4 GHz)"
@@ -16,5 +35,15 @@ config MICCLICKER_ESPNOW_PROBE_CHANNEL
     help
         Both ends must use the same channel. The probe logs the channel it actually
         reached, so a mismatch shows up in the logs rather than only as silence.
+
+config MICCLICKER_PAIR_ON_BOOT
+    bool "Open a pairing window on boot when no binding is stored"
+    default y
+    depends on MICCLICKER_ROLE_AUDIO_LINK
+    help
+        When no pairing record exists, the C3 broadcasts one pairing request window at
+        boot. Disable to require an explicit pairing gesture instead; with this off and
+        no binding the device captures and encodes but never sends, which is useful for
+        measuring the sender alone.
 
 endmenu

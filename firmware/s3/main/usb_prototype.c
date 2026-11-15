@@ -15,6 +15,8 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
 #include "freertos/task.h"
+#include "mic_jitter.h"
+#include "mic_link_audio.h"
 #include "tinyusb.h"
 #include "tinyusb_default_config.h"
 #include "usb_descriptors.h"
@@ -55,6 +57,9 @@ static volatile uint32_t s_audio_usb_packets;
 static volatile uint32_t s_audio_usb_bytes;
 static volatile uint32_t s_audio_empty_packets;
 static volatile uint32_t s_audio_alt_transitions;
+// Set once the ring has primed, so the startup wait happens once per stream rather
+// than every time the buffer dips.
+static volatile bool s_audio_primed;
 
 static bool s_mute[2];
 static int16_t s_volume_db256[2];
@@ -95,6 +100,19 @@ static void fill_status_report(uint8_t *buffer)
     put_u32_le(&buffer[36], s_audio_usb_bytes);
     put_u32_le(&buffer[40], s_audio_empty_packets);
     put_u32_le(&buffer[44], s_audio_alt_transitions);
+
+    // Stage 4 link health. Bytes 0..47 keep the stage-2 layout so an existing tool
+    // reading this report keeps working; these four words extend it.
+    mic_link_audio_stats_t link;
+    mic_link_audio_get_stats(&link);
+    mic_jitter_t *ring = mic_link_audio_ring();
+    mic_jitter_stats_t jitter;
+    mic_jitter_get_stats(ring, &jitter);
+    // rx | (gap << 16) so a single 32-bit word carries both counts under the 64-byte cap.
+    put_u32_le(&buffer[48], link.audio_rx | (link.audio_gap << 16));
+    put_u32_le(&buffer[52], link.audio_dup | (link.audio_late << 16));
+    put_u32_le(&buffer[56], jitter.take_underruns | (jitter.put_overruns << 16));
+    put_u32_le(&buffer[60], mic_jitter_fill_ms(ring));
 }
 
 static bool send_all_keys_up(void)
@@ -425,6 +443,8 @@ bool tud_audio_set_itf_close_ep_cb(uint8_t rhport, tusb_control_request_t const 
     (void)request;
     s_audio_streaming = false;
     ++s_audio_alt_transitions;
+    s_audio_primed = false;
+    mic_link_audio_set_consuming(false);
     return true;
 }
 
@@ -440,18 +460,28 @@ bool tud_audio_set_itf_cb(uint8_t rhport, tusb_control_request_t const *request)
     if (s_audio_streaming != streaming) {
         s_audio_streaming = streaming;
         ++s_audio_alt_transitions;
+        // The link receiver must know whether anyone is draining the endpoint: feeding
+        // the ring while the host is idle only produces overflow.
+        mic_link_audio_set_consuming(streaming);
+        // A new stream starts from a flushed ring, so it must prime again.
+        s_audio_primed = false;
     }
     return true;
 }
 
+// Drain the link ring into the UAC endpoint, one millisecond at a time.
+//
+// The endpoint expects exactly one packet per millisecond, so this task is paced by the
+// USB frame clock rather than by data availability. When the ring is short it still
+// hands back a full millisecond: the ring conceals the gap, which is what keeps the
+// stream continuous across a lost frame or a clock mismatch instead of tearing.
+//
+// The mute and volume controls from the stage-2 prototype are still applied here, so
+// the host side behaves the same way it did with the sine wave.
 static void audio_task(void *argument)
 {
     (void)argument;
-    static const int16_t sine_1khz[MIC_AUDIO_FRAMES_PER_MS] = {
-        0, 4592, 8485, 11087, 12000, 11087, 8485, 4592,
-        0, -4592, -8485, -11087, -12000, -11087, -8485, -4592,
-    };
-    size_t phase = 0;
+    mic_jitter_t *ring = mic_link_audio_ring();
     TickType_t last_wake = xTaskGetTickCount();
 
     for (;;) {
@@ -462,16 +492,43 @@ static void audio_task(void *argument)
 
         int16_t frame[MIC_AUDIO_FRAMES_PER_MS];
         bool muted = s_mute[0] || s_mute[1];
-        uint32_t gain = s_effective_gain;
-        for (size_t i = 0; i < MIC_AUDIO_FRAMES_PER_MS; ++i) {
-            int32_t sample = muted ? 0 : ((int32_t)sine_1khz[phase] * (int32_t)gain + 16383) >> 15;
-            if (sample > INT16_MAX) {
-                sample = INT16_MAX;
-            } else if (sample < INT16_MIN) {
-                sample = INT16_MIN;
+        if (muted) {
+            memset(frame, 0, sizeof(frame));
+        } else {
+            // Wait for the ring to prime before the first packet. Starting to drain an
+            // empty ring turns the startup transient into a burst of concealed
+            // milliseconds; waiting one target worth of audio turns it into a single
+            // ~60 ms delay at the start of the stream, which no listener notices.
+            if (!s_audio_primed) {
+                if (mic_jitter_fill_ms(ring) < MIC_JITTER_TARGET_MS) {
+                    memset(frame, 0, sizeof(frame));
+                    uint16_t w = tud_audio_write(frame, sizeof(frame));
+                    if (w == sizeof(frame)) {
+                        ++s_audio_produced_frames;
+                    } else {
+                        ++s_audio_short_writes;
+                    }
+                    continue;
+                }
+                s_audio_primed = true;
             }
-            frame[i] = (int16_t)sample;
-            phase = (phase + 1) % MIC_AUDIO_FRAMES_PER_MS;
+
+            // A one-millisecond take never short-reads: an underrun is concealed by the
+            // ring so the endpoint always sees a full packet.
+            mic_jitter_take(ring, frame, MIC_AUDIO_FRAMES_PER_MS, esp_timer_get_time());
+
+            uint32_t gain = s_effective_gain;
+            if (gain != 32767) {
+                for (size_t i = 0; i < MIC_AUDIO_FRAMES_PER_MS; ++i) {
+                    int32_t scaled = ((int32_t)frame[i] * (int32_t)gain + 16383) >> 15;
+                    if (scaled > INT16_MAX) {
+                        scaled = INT16_MAX;
+                    } else if (scaled < INT16_MIN) {
+                        scaled = INT16_MIN;
+                    }
+                    frame[i] = (int16_t)scaled;
+                }
+            }
         }
 
         uint16_t written = tud_audio_write(frame, sizeof(frame));
@@ -520,6 +577,10 @@ void micclicker_usb_prototype_start(void)
         return;
     }
 
+    // Bring the link receiver up after USB installs but before the audio task runs, so
+    // the first UAC read already has a valid ring rather than a NULL dereference.
+    micclicker_s3_audio_start();
+
     TaskHandle_t command_handle = NULL;
     TaskHandle_t audio_handle = NULL;
     if (xTaskCreate(command_task, "mc_config", 4096, NULL, 4, &command_handle) != pdPASS) {
@@ -532,7 +593,7 @@ void micclicker_usb_prototype_start(void)
         return;
     }
 
-    ESP_LOGI(TAG, "USB_PROTOTYPE: READY audio=16000Hz/16bit/mono tone=1000Hz hid=keyboard+config");
+    ESP_LOGI(TAG, "USB_PROTOTYPE: READY audio=16000Hz/16bit/mono source=link hid=keyboard+config");
 }
 
 #endif // !CONFIG_MICCLICKER_STAGE1_SELFTEST

@@ -1,20 +1,24 @@
 # MicClicker 固件工程
 
-当前目录包含第 1 阶段的可重复硬件自检、第 2 阶段的 USB 原型、G.722 组件，以及第 3 阶段的 ESP-NOW 协议层与真机探针。**仍不是完整产品固件**：C3 音频采集、S3 解码缓冲与 USB 输出之间的全链路（第 4 阶段）尚未接起来，配置工具也未开始。USB 原型以 macOS 为首个验证目标，Windows / Linux、热插拔和休眠恢复仍须单独验证。
+当前目录包含第 1 阶段的可重复硬件自检、第 2 阶段的 USB 原型、G.722 组件、第 3 阶段的 ESP-NOW 协议层与真机探针，以及**第 4 阶段的音频全链路产品固件**（C3 ES8311 采集 → G.722 → ESP-NOW → S3 解码 → 自适应缓冲 → UAC2 输出，macOS 已打通）。**仍不是完整产品固件**：按键链路（第 5 阶段）、配置工具、运行时映射尚未实现。全链路以 macOS 为首个验证目标，Windows / Linux、热插拔、休眠恢复、ASR 对比与长稳结论仍须单独验证，边界见 `tests/audio_link/README.md` 第 4 节。
 
 ## 目录
 
-- `s3/`：ESP32-S3-N16R8 固件。默认构建 UAC2 麦克风 + 标准键盘 HID + vendor 配置 HID 原型；`MICCLICKER_STAGE1_SELFTEST=y` 时改为构建 PSRAM / Wi-Fi / BOOT 自检。音频为 16 kHz、16-bit 小端 PCM、单声道、1 kHz 已知正弦波。
-- `c3/`：AI Passport / ESP32-C3 自检。执行 Wi-Fi 扫描后，依次采集 RELEASED、UP、DOWN、OK 四个键态的 ADC 数据，输出原始值、噪声、估算/校准电压、窗口裕量和误分类数。
+- `s3/`：ESP32-S3-N16R8 固件。默认构建 UAC2 麦克风 + 标准键盘 HID + vendor 配置 HID，麦克风音频来自无线链路（`main/audio_link.c` 收包解码进环形缓冲，`main/usb_prototype.c` 的音频任务从缓冲取数写端点）；`MICCLICKER_STAGE1_SELFTEST=y` 时改为 PSRAM / Wi-Fi / BOOT 自检；`--probe` 时为第 3 阶段探针接收端。两端 16 kHz、16-bit 小端 PCM、单声道。
+- `c3/`：AI Passport / ESP32-C3 固件。默认是第 4 阶段音频链路角色（`main/audio_task.c` 采集编码发送，`main/capture.c` 驱动 ES8311+I2S）；`MICCLICKER_ROLE_SELFTEST=y` 时退回 Wi-Fi 扫描 + 四键态 ADC + G.722 向量自检；`--probe` 时为第 3 阶段探针发送端。
 - `components/wifi_scan/`：两端共享的最小 Wi-Fi 扫描组件，不记录 SSID/BSSID，不自动擦除 NVS。
 - `components/g722/`：G.722 64 kbit/s 编解码组件，内嵌 WebRTC/SpanDSP 的公有领域实现，帧长固定为 320 样本 / 160 字节。
 - `components/link_proto/`：ESP-NOW 应用层帧编解码与序号跟踪，对应 [../docs/protocol.md](../docs/protocol.md)。依赖仅 `esp_common`，可在主机上测试。
 - `components/link_radio/`：ESP-NOW 传输层（Wi-Fi 信道、peer 管理、收发计数），带 `-Werror` 构建。
 - `components/link_bind/`：配对绑定持久化，单条 NVS blob，非法记录拒绝写入；密钥从不打印。
 - `components/link_probe/`：两端 ESP-NOW 探针的收发角色与阶段调度，仅用于第 3 阶段真机验证。
+- `components/link_session/`：两端共享的产品侧链路 bring-up：从 NVS 读绑定并按存储信道起 radio，未绑定时才开配对窗口。与探针的关键差别是**正常开机绝不清除绑定**。
+- `components/audio_jitter/`：接收端 PCM 环形缓冲与时钟漂移补偿（有界、溢出丢最旧、欠载遮蔽、高/低水位自适应），带主机侧测试。
 - `tests/g722/`：G.722 主机侧验证（封装契约 + 黄金向量逐比特比对），不依赖 ESP-IDF 或硬件，详见 `tests/g722/README.md`。
 - `tests/link_proto/`：无线协议主机侧验证（空口布局、拒绝规则、序号回绕与去重），不依赖 IDF 或硬件。
 - `tests/espnow/`：ESP-NOW 真机探针的判分脚本与实测记录，详见 `tests/espnow/README.md`。
+- `tests/audio_jitter/`：环形缓冲与漂移控制器的主机侧测试，不需要 IDF 或硬件。
+- `tests/audio_link/`：第 4 阶段全链路真机验收的判分脚本与实测记录，详见 `tests/audio_link/README.md`。
 - `build.sh`：锁定 ESP-IDF v5.5.3 的构建入口，含产品与探针两种配置。
 
 板级引脚和 ADC 阈值集中在 `c3/main/board.h`。S3 的 Flash、PSRAM、控制台及分区配置在 `s3/sdkconfig.defaults` 和 `s3/partitions.csv`，不预设未经确认的原生 USB 引脚。
@@ -27,24 +31,28 @@
 - esptool 4.12.0
 - `xtensa-esp-elf` / `riscv32-esp-elf` 14.2.0_20251107
 
-无 Arduino、外部 BSP 二进制组件。**G.722 不使用外部库**：`components/g722/` 内嵌 WebRTC `third_party/g722`（SpanDSP，公有领域），只改过 include 路径，来源与许可证见该目录下的 `README.upstream.txt` 和 `LICENSE-upstream.txt`。S3 的 USB 依赖由 `s3/main/idf_component.yml` 和 `s3/dependencies.lock` 锁定：`espressif/esp_tinyusb 2.0.0`、`espressif/tinyusb 0.21.0~6`。AI Passport 引脚事实来自 MIT 许可的上游 FoloToy BSP，版本和证据边界见 `docs/hardware-c3.md`。
+无 Arduino、外部 BSP 二进制组件。**G.722 不使用外部库**：`components/g722/` 内嵌 WebRTC `third_party/g722`（SpanDSP，公有领域），只改过 include 路径，来源与许可证见该目录下的 `README.upstream.txt` 和 `LICENSE-upstream.txt`。S3 的 USB 依赖由 `s3/main/idf_component.yml` 和 `s3/dependencies.lock` 锁定：`espressif/esp_tinyusb 2.0.0`、`espressif/tinyusb 0.21.0~6`。C3 的音频依赖由 `c3/main/idf_component.yml` 锁定：`espressif/esp_codec_dev 1.6.2`（与上一项目在同一块板卡上验证过的版本一致）。AI Passport 引脚事实来自 MIT 许可的上游 FoloToy BSP，版本和证据边界见 `docs/hardware-c3.md`。
 
 ## 构建
 
 在仓库根目录执行：
 
 ```bash
-./firmware/build.sh s3   # 默认：USB 复合设备原型
-./firmware/build.sh c3   # C3 自检（Wi-Fi + 四键态 ADC + G.722）
+./firmware/build.sh s3   # 默认：音频全链路接收端（UAC2 + 键盘 HID + 配置 HID）
+./firmware/build.sh c3   # 默认：音频全链路发送端（ES8311 采集 + G.722 + ESP-NOW）
 ./firmware/build.sh s3 --probe   # 第 3 阶段探针：S3 作为接收端
 ./firmware/build.sh c3 --probe   # 第 3 阶段探针：C3 作为发送端
 ./firmware/tests/g722/run.sh         # G.722 主机侧验证，不需要 IDF 或硬件
 ./firmware/tests/link_proto/run.sh   # 无线协议主机侧验证，不需要 IDF 或硬件
+./firmware/tests/audio_jitter/run.sh # 环形缓冲与漂移补偿，不需要 IDF 或硬件
+./firmware/tests/audio_link/check.sh c3.log s3.log 1800   # 第 4 阶段真机判分
 ```
 
 探针是**独立配置**（`sdkconfig.probe.defaults`），不是运行时开关：C3 上它替换交互式自检，S3 上它替换 USB 复合设备，避免同一镜像里两套逻辑争用外设。加 `--probe` 会清空该目标的 `build/`，防止产品配置的目标文件混入探针镜像。恢复产品配置直接不带该参数重建。
 
-复跑 S3 第 1 阶段自检时，先在 `firmware/s3/sdkconfig.defaults` 中加入 `CONFIG_MICCLICKER_STAGE1_SELFTEST=y`，再执行 `./firmware/build.sh s3`；恢复 USB 原型时移除该设置。构建脚本每次都会重新生成 `sdkconfig`，因此切换会完整生效。
+复跑 S3 第 1 阶段自检时，先在 `firmware/s3/sdkconfig.defaults` 中加入 `CONFIG_MICCLICKER_STAGE1_SELFTEST=y`，再执行 `./firmware/build.sh s3`；恢复产品固件时移除该设置。复跑 C3 自检时把 `CONFIG_MICCLICKER_ROLE_SELFTEST=y` 加进 `firmware/c3/sdkconfig.defaults`。构建脚本每次都会重新生成 `sdkconfig`，因此切换会完整生效。
+
+角色选择是编译期开关而非运行时模式：探针会在每次启动时擦除配对绑定，产品固件绝不能这样做，两者放同一个镜像里迟早互相破坏。
 
 脚本默认使用上述本机路径，也接受预先设置的 `IDF_PATH` 和 `IDF_PYTHON_ENV_PATH`，但 IDF 版本、提交和编译器版本必须与上表一致。每次构建都会删除可再生的 `firmware/<目标>/sdkconfig` 并从 `sdkconfig.defaults` 重新生成，避免旧选择静默残留；本地 menuconfig 改动不会被该入口保留。构建产物分别位于 `firmware/s3/build/` 和 `firmware/c3/build/`，均被 Git 忽略。
 

@@ -10,23 +10,31 @@ MicClicker 是一套一对一无线语音输入与快捷键设备：
 - ESP32-S3 接收并解码音频，在电脑上枚举为免驱 USB 复合设备：UAC 麦克风、标准 HID 键盘、独立 vendor-defined HID 配置接口。
 - 正常使用不需要专用驱动或常驻桥接软件。按需配置工具只负责状态查看、配对管理和快捷键配置，不参与音频或 HID 转发。
 
-当前仓库已完成第 1 阶段底层自检及第 2 阶段 macOS USB 原型验证，尚无完整产品固件或跨平台配置工具源码。S3 板卡的芯片级实测、工具链和已知限制见 [docs/hardware-s3.md](docs/hardware-s3.md)；AI Passport（C3）的硬件事实、已验证项与仍缺的验证见 [docs/hardware-c3.md](docs/hardware-c3.md)。两端芯片级备份已完成；S3 的八线 PSRAM、Wi-Fi 和运行态 BOOT 长按，以及 C3 的 Wi-Fi、四键态 ADC 分布均已真机通过。UAC2 麦克风、键盘 HID 和独立配置 HID 已在 macOS 上完成并发录音、成对键事件和配置通信。第 3 阶段的 G.722 部分已完成：`firmware/components/g722/` 内嵌 WebRTC/SpanDSP 公有领域实现，与 ffmpeg 逐比特一致，C3 实机自检通过（3.26 ms/帧，20 ms 预算的 16%）；**ITU 官方向量仍未验证**（需 ITU 账号，见 `firmware/tests/g722/README.md`），不能据此宣称通过 ITU 一致性。第 3 阶段的 ESP-NOW 部分已完成协议层与真机分测：`firmware/components/link_proto/`（帧编解码、序号规则）、`link_radio/`（传输封装）、`link_bind/`（配对绑定持久化）、`link_probe/`（两端探针）；协议规范见 [docs/protocol.md](docs/protocol.md)，实测数据与边界见 [firmware/tests/espnow/README.md](firmware/tests/espnow/README.md)。真机（C3→S3，信道 1，1 米直视）四轮零丢包、突发 406–507 kbit/s、RTT 平均 5.7–8.2 ms、20 按键事件全应用且 40 次重传全抑制、配对与加密单播往返通过。**仍未做**：重启后按旧绑定自动重连、配对过程防中间人（当前配对请求明文）、距离/穿墙/干扰、与音频并发——不能据此宣称无线链路已全面验证。Windows / Linux、热插拔、休眠恢复、长时录音和功耗仍须验证，不能把原型写成全链路或全平台通过。
+当前仓库已完成第 1 阶段底层自检、第 2 阶段 macOS USB 原型、第 3 阶段编码与无线分测，以及**第 4 阶段音频全链路（macOS）**；尚无按键链路（第 5 阶段）、运行时映射和跨平台配置工具源码。S3 板卡的芯片级实测、工具链和已知限制见 [docs/hardware-s3.md](docs/hardware-s3.md)；AI Passport（C3）的硬件事实、已验证项与仍缺的验证见 [docs/hardware-c3.md](docs/hardware-c3.md)。两端芯片级备份已完成；S3 的八线 PSRAM、Wi-Fi 和运行态 BOOT 长按，以及 C3 的 Wi-Fi、四键态 ADC 分布均已真机通过。UAC2 麦克风、键盘 HID 和独立配置 HID 已在 macOS 上完成并发录音、成对键事件和配置通信。第 3 阶段的 G.722 部分已完成：`firmware/components/g722/` 内嵌 WebRTC/SpanDSP 公有领域实现，与 ffmpeg 逐比特一致，C3 实机自检通过（3.26 ms/帧，20 ms 预算的 16%）；**ITU 官方向量仍未验证**（需 ITU 账号，见 `firmware/tests/g722/README.md`），不能据此宣称通过 ITU 一致性。第 3 阶段的 ESP-NOW 部分已完成协议层与真机分测：`firmware/components/link_proto/`（帧编解码、序号规则）、`link_radio/`（传输封装）、`link_bind/`（配对绑定持久化）、`link_probe/`（两端探针）；协议规范见 [docs/protocol.md](docs/protocol.md)，实测数据与边界见 [firmware/tests/espnow/README.md](firmware/tests/espnow/README.md)。真机（C3→S3，信道 1，1 米直视）四轮零丢包、突发 406–507 kbit/s、RTT 平均 5.7–8.2 ms、20 按键事件全应用且 40 次重传全抑制、配对与加密单播往返通过。其中「重启后按旧绑定自动重连」已在第 4 阶段由产品固件补上（见下）。**仍未做**：配对过程防中间人（当前配对请求明文）、距离/穿墙/干扰。
+
+第 4 阶段的音频全链路已在 macOS 打通（2026-11-15）：C3 经 ES8311+I2S 采集 16 kHz/16 bit/单声道，每 20 ms 编码一帧 G.722 并一帧一包加密单播；S3 解码后经**自适应环形缓冲**（`firmware/components/audio_jitter/`，高水位丢最旧帧、低水位复帧、缺口遮蔽，240 605 项主机侧检查）输出到 UAC2 端点，主机枚举为 16 kHz 单声道麦克风并录到真实音频。产品侧链路 bring-up 在 `firmware/components/link_session/`，与探针的关键差别是**正常开机绝不清除绑定**；C3 未绑定时作为发起方配对，S3 未绑定时常驻监听。判分脚本 `firmware/tests/audio_link/check.sh`，实测与边界见 [firmware/tests/audio_link/README.md](firmware/tests/audio_link/README.md)。
+
+**第 4 阶段仍未做**：ASR 效果与同环境有线麦基线对比、端到端延迟分解、Windows / Linux、距离/穿墙/干扰、多语速长稳。**特别注意漂移补偿的长期行为尚未在真机压到**：本对 C3/S3 实测相对漂移约 0.00017%，30 分钟运行只触发 3 次 1 ms 补偿，缓冲全程 4–82 ms、零溢出零欠载，但这只能说明这对板卡漂移小，不能说明控制器在大漂移下也收敛（主机侧「快/慢 0.42% 各模拟一小时不发散」是模型证据，非真机）。按键链路尚未接入产品固件（S3 现在把 KEY 帧计为 `rejected`，第 5 阶段才与音频并发）。Windows / Linux、热插拔、休眠恢复和功耗仍须验证，不能把当前状态写成全平台通过。
 
 目录与构建入口：
 
-- `firmware/s3/`：S3 的 PSRAM / Wi-Fi / BOOT 自检工程；第 2 阶段在此基础上增加 USB 原型。
-- `firmware/c3/`：C3 的 Wi-Fi / ADC 自检工程，板级差异集中在 `main/board.h`。
+- `firmware/s3/`：S3 工程。默认是第 4 阶段音频全链路接收端（`main/audio_link.c` 收包解码进环形缓冲，`main/usb_prototype.c` 的音频任务从缓冲取数写 UAC2 端点）；`MICCLICKER_STAGE1_SELFTEST=y` 时是 PSRAM / Wi-Fi / BOOT 自检，`--probe` 时是探针接收端。
+- `firmware/c3/`：C3 工程。默认是第 4 阶段音频全链路发送端（`main/audio_task.c` 采集编码发送，`main/capture.c` 驱动 ES8311+I2S）；`MICCLICKER_ROLE_SELFTEST=y` 时是 Wi-Fi / ADC 自检，`--probe` 时是探针发送端。板级差异集中在 `main/board.h`。
 - `firmware/components/wifi_scan/`：两端共享扫描组件，不记录 SSID/BSSID，不自动擦除 NVS。
 - `firmware/components/g722/`：G.722 编解码组件（公有领域，非 LGPL），帧长固定 320 样本 / 160 字节。
 - `firmware/components/link_proto/`：ESP-NOW 应用层帧编解码与序号跟踪，对应 `docs/protocol.md`。
 - `firmware/components/link_radio/`、`link_bind/`：ESP-NOW 传输封装与配对绑定持久化。
 - `firmware/components/link_probe/`：第 3 阶段两端探针的收发角色与阶段调度。
+- `firmware/components/link_session/`：两端共享的产品侧链路 bring-up（读绑定、按存储信道起 radio、未绑定时才开配对窗口）。与探针的关键差别是**正常开机绝不清除绑定**。
+- `firmware/components/audio_jitter/`：接收端 PCM 环形缓冲与时钟漂移补偿（有界、溢出丢最旧、欠载遮蔽、高/低水位自适应）。
 - `firmware/tests/g722/`：G.722 主机侧验证，`./firmware/tests/g722/run.sh` 不需要 IDF 或硬件。
 - `firmware/tests/link_proto/`：无线协议主机侧验证，`./firmware/tests/link_proto/run.sh` 不需要 IDF 或硬件。
 - `firmware/tests/espnow/`：ESP-NOW 真机探针的判分脚本与实测记录，`check.sh <发送端日志> <接收端日志>`。
+- `firmware/tests/audio_jitter/`：环形缓冲与漂移控制器的主机侧验证，`./firmware/tests/audio_jitter/run.sh` 不需要 IDF 或硬件。
+- `firmware/tests/audio_link/`：第 4 阶段全链路真机验收的判分脚本与实测记录，`check.sh <C3 日志> <S3 日志> [期望秒数]`。
 - `firmware/README.md`：锁定的依赖、烧录影响、实际命令和自检判据。
 
-ESP-IDF 固定为 v5.5.3；在仓库根目录使用 `./firmware/build.sh s3` 和 `./firmware/build.sh c3`（产品配置），探针配置加 `--probe`。这两条产品命令已于 2026-11-14 实际构建通过；同日加入 G.722 组件后再次构建通过，加入 ESP-NOW 组件后产品与探针两种配置均再次通过。新增源码目录、构建入口或测试命令时，同步更新本文件和 `firmware/README.md`。
+ESP-IDF 固定为 v5.5.3；在仓库根目录使用 `./firmware/build.sh s3` 和 `./firmware/build.sh c3`（产品配置），探针配置加 `--probe`。这两条产品命令已于 2026-11-14 实际构建通过；同日加入 G.722 组件后再次构建通过，加入 ESP-NOW 组件后产品与探针两种配置均再次通过；2026-11-15 加入第 4 阶段音频全链路后两种产品配置均再次通过。新增源码目录、构建入口或测试命令时，同步更新本文件和 `firmware/README.md`。
 
 首版不包含扬声器、多发送端、后台全局热键或 CDC。普通 HID 只作用于系统当前焦点，不得把快捷键描述为可保证送达后台 ASR 应用。
 

@@ -1,0 +1,6 @@
+dependencies:
+  idf: ">=5.5.3,<5.6.0"
+  # ES8311 driver and the I2S data path. The same version was used by the previous
+  # project on this exact board (ai-passport-mic, ES8311 + I2S capture verified), so
+  # this is a pinned known-good version rather than a fresh choice.
+  espressif/esp_codec_dev: "1.6.2"

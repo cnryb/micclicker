@@ -15,6 +15,13 @@ void app_main(void)
         ESP_LOGE(TAG, "Starting the ESP-NOW sender probe failed: %s", esp_err_to_name(err));
     }
 }
+#elif CONFIG_MICCLICKER_ROLE_AUDIO_LINK
+void micclicker_c3_audio_start(void);
+
+void app_main(void)
+{
+    micclicker_c3_audio_start();
+}
 #else
 void micclicker_c3_selftest_main(void);
 
