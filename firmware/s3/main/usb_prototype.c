@@ -16,8 +16,10 @@
 #include "freertos/queue.h"
 #include "freertos/task.h"
 #include "mic_jitter.h"
+#include "mic_key_map.h"
 #include "mic_link_audio.h"
 #include "mic_link_keys.h"
+#include "mic_session.h"
 #include "tinyusb.h"
 #include "tinyusb_default_config.h"
 #include "usb_descriptors.h"
@@ -26,6 +28,9 @@
 #define MIC_CMD_LEFT_ALT 0x02
 #define MIC_CMD_ENTER 0x03
 #define MIC_CMD_ALL_KEYS_UP 0x04
+#define MIC_CMD_READ_MAP 0x10
+#define MIC_CMD_WRITE_MAP 0x11
+#define MIC_CMD_RESET_MAP 0x12
 
 #define MIC_RESULT_OK 0
 #define MIC_RESULT_INVALID 1
@@ -35,6 +40,13 @@
 
 #define MIC_KEY_HOLD_MS 50
 #define MIC_AUDIO_FRAMES_PER_MS 16
+#define MIC_FLAG_MOUNTED 0x01
+#define MIC_FLAG_STREAMING 0x02
+#define MIC_FLAG_ALT_PRESSED 0x04
+#define MIC_FLAG_ENTER_PRESSED 0x08
+#define MIC_FLAG_CONFIG_ERROR 0x10
+#define MIC_FLAG_PAIRED 0x20
+#define MIC_FLAG_LINK_UP 0x40
 
 static const char *TAG = "usb_prototype";
 static QueueHandle_t s_command_queue;
@@ -42,6 +54,7 @@ static QueueHandle_t s_command_queue;
 static volatile uint8_t s_last_command;
 static volatile uint8_t s_last_result;
 static volatile bool s_config_error;
+static volatile bool s_map_report_pending;
 static volatile bool s_alt_pressed;
 static volatile bool s_enter_pressed;
 static volatile uint32_t s_ping_count;
@@ -77,15 +90,26 @@ static void put_u32_le(uint8_t *destination, uint32_t value)
     destination[3] = (uint8_t)(value >> 24);
 }
 
+static bool command_is_known(uint8_t command)
+{
+    return command == MIC_CMD_PING || command == MIC_CMD_LEFT_ALT || command == MIC_CMD_ENTER ||
+           command == MIC_CMD_ALL_KEYS_UP || command == MIC_CMD_READ_MAP ||
+           command == MIC_CMD_WRITE_MAP || command == MIC_CMD_RESET_MAP;
+}
+
 static void fill_status_report(uint8_t *buffer)
 {
     memset(buffer, 0, MIC_CONFIG_REPORT_SIZE);
+    mic_session_info_t session;
+    mic_session_get(&session);
     buffer[0] = 1;
-    buffer[1] = (tud_mounted() ? 0x01 : 0) |
-                (s_audio_streaming ? 0x02 : 0) |
-                (s_alt_pressed ? 0x04 : 0) |
-                (s_enter_pressed ? 0x08 : 0) |
-                (s_config_error ? 0x10 : 0);
+    buffer[1] = (tud_mounted() ? MIC_FLAG_MOUNTED : 0) |
+                (s_audio_streaming ? MIC_FLAG_STREAMING : 0) |
+                (s_alt_pressed ? MIC_FLAG_ALT_PRESSED : 0) |
+                (s_enter_pressed ? MIC_FLAG_ENTER_PRESSED : 0) |
+                (s_config_error ? MIC_FLAG_CONFIG_ERROR : 0) |
+                (session.paired ? MIC_FLAG_PAIRED : 0) |
+                (mic_link_audio_link_up() ? MIC_FLAG_LINK_UP : 0);
     buffer[2] = s_last_command;
     buffer[3] = s_last_result;
     put_u32_le(&buffer[4], s_ping_count);
@@ -100,8 +124,19 @@ static void fill_status_report(uint8_t *buffer)
     put_u32_le(&buffer[40], s_audio_empty_packets);
     put_u32_le(&buffer[44], s_audio_alt_transitions);
 
-    // Stage 4 link health. Bytes 0..47 keep the stage-2 layout so an existing tool
-    // reading this report keeps working; these four words extend it.
+    // Bytes 0..47 keep the stage-2 layout. Bytes 48..63 are stage-4 link health unless a
+    // READ_MAP gated the next GET to return the 16-byte map blob instead (docs/config-hid.md).
+    // Do not consume the gate while the command is still BUSY: a host that polls GET while
+    // waiting for completion would otherwise clear the gate and then see link counters.
+    if (s_map_report_pending && s_last_result != MIC_RESULT_BUSY) {
+        const mic_key_map_t *map = mic_link_keys_map();
+        if (map != NULL) {
+            mic_key_map_encode(map, &buffer[48]);
+        }
+        s_map_report_pending = false;
+        return;
+    }
+
     mic_link_audio_stats_t link;
     mic_link_audio_get_stats(&link);
     mic_jitter_t *ring = mic_link_audio_ring();
@@ -152,13 +187,15 @@ static bool send_test_key(uint8_t command)
 static void command_task(void *argument)
 {
     (void)argument;
+    uint8_t frame[MIC_CONFIG_REPORT_SIZE];
     for (;;) {
-        uint8_t command = 0;
-        if (xQueueReceive(s_command_queue, &command, pdMS_TO_TICKS(10)) != pdTRUE) {
+        if (xQueueReceive(s_command_queue, frame, pdMS_TO_TICKS(10)) != pdTRUE) {
             continue;
         }
 
+        uint8_t command = frame[0];
         bool ok = true;
+        uint8_t result = MIC_RESULT_OK;
         switch (command) {
         case MIC_CMD_PING:
             ++s_ping_count;
@@ -166,17 +203,48 @@ static void command_task(void *argument)
         case MIC_CMD_LEFT_ALT:
         case MIC_CMD_ENTER:
             ok = send_test_key(command);
+            result = ok ? MIC_RESULT_OK : MIC_RESULT_NOT_READY;
             break;
         case MIC_CMD_ALL_KEYS_UP:
             ok = send_all_keys_up();
+            result = ok ? MIC_RESULT_OK : MIC_RESULT_NOT_READY;
             break;
+        case MIC_CMD_READ_MAP:
+            s_map_report_pending = true;
+            break;
+        case MIC_CMD_WRITE_MAP: {
+            mic_key_map_t map;
+            esp_err_t err = mic_key_map_decode(&map, &frame[1], MIC_KEY_MAP_BLOB_BYTES);
+            if (err != ESP_OK) {
+                ++s_rejected_count;
+                result = MIC_RESULT_INVALID;
+                ok = false;
+                break;
+            }
+            err = mic_link_keys_apply_map(&map);
+            if (err != ESP_OK) {
+                ++s_rejected_count;
+                result = MIC_RESULT_INVALID;
+                ok = false;
+            }
+            break;
+        }
+        case MIC_CMD_RESET_MAP: {
+            esp_err_t err = mic_link_keys_reset_map();
+            if (err != ESP_OK) {
+                ++s_rejected_count;
+                result = MIC_RESULT_INVALID;
+                ok = false;
+            }
+            break;
+        }
         default:
             ++s_rejected_count;
             s_last_result = MIC_RESULT_INVALID;
             s_config_error = true;
             continue;
         }
-        s_last_result = ok ? MIC_RESULT_OK : MIC_RESULT_NOT_READY;
+        s_last_result = result;
         s_config_error = !ok;
     }
 }
@@ -219,14 +287,19 @@ void tud_hid_set_report_cb(uint8_t instance, uint8_t report_id,
     }
 
     s_last_command = buffer[0];
-    if (buffer[0] != MIC_CMD_PING && buffer[0] != MIC_CMD_LEFT_ALT &&
-        buffer[0] != MIC_CMD_ENTER && buffer[0] != MIC_CMD_ALL_KEYS_UP) {
+    if (!command_is_known(buffer[0])) {
+        s_map_report_pending = false;
         s_last_result = MIC_RESULT_INVALID;
         s_config_error = true;
         ++s_rejected_count;
         return;
     }
-    if (xQueueSend(s_command_queue, &buffer[0], 0) != pdTRUE) {
+    // A non-READ_MAP command cancels an unused map gate so a later GET cannot return a
+    // stale overlay after the host moved on.
+    if (buffer[0] != MIC_CMD_READ_MAP) {
+        s_map_report_pending = false;
+    }
+    if (xQueueSend(s_command_queue, buffer, 0) != pdTRUE) {
         s_last_result = MIC_RESULT_QUEUE_FULL;
         s_config_error = true;
         ++s_rejected_count;
@@ -546,7 +619,8 @@ void micclicker_usb_prototype_start(void)
     s_sample_frequency_range.subrange[0].bRes = 0;
     update_effective_gain();
 
-    s_command_queue = xQueueCreate(8, sizeof(uint8_t));
+    // Full 64-byte frames: WRITE_MAP needs the 16-byte blob that follows the opcode.
+    s_command_queue = xQueueCreate(8, MIC_CONFIG_REPORT_SIZE);
     if (s_command_queue == NULL) {
         ESP_LOGE(TAG, "USB_PROTOTYPE: FAIL reason=command_queue");
         return;

@@ -7,6 +7,7 @@
 // only contract between them, so the USB side never needs to know about ESP-NOW,
 // G.722 or sessions, and the link side never needs to know about endpoints.
 
+#include <stdbool.h>
 #include <stdint.h>
 
 #include "mic_jitter.h"
@@ -38,6 +39,10 @@ mic_jitter_t *mic_link_audio_ring(void);
 
 // Consistent snapshot of the link counters.
 void mic_link_audio_get_stats(mic_link_audio_stats_t *out);
+
+// True while the product link is considered alive (same sense as the STATUS
+// `link=up` / `link=down` field: not currently in the post-timeout lost state).
+bool mic_link_audio_link_up(void);
 
 // Tell the receiver whether the host is draining the endpoint (UAC alternative setting 1
 // and mounted). While it is not, decoded frames are counted but not queued, so the ring

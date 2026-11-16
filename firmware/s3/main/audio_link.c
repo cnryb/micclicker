@@ -105,6 +105,12 @@ void mic_link_audio_get_stats(mic_link_audio_stats_t *out)
     out->heartbeats = s_stats.heartbeats;
 }
 
+bool mic_link_audio_link_up(void)
+{
+    // Same sense as the STATUS log's link=up / link=down field.
+    return !s_link_lost;
+}
+
 // Whether the host is actually consuming the endpoint. The ring must not be fed while
 // the endpoint is idle: nobody drains it, so every arriving frame would evict the
 // oldest one and the counters would fill with meaningless overflow before the host ever

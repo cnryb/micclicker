@@ -135,7 +135,7 @@ C3 只对去抖后的状态变化生成事件，不依赖电脑端自动重复�
 | 2. USB 原型 | S3 输出已知 PCM/正弦波，同时发送成对 HID 按下/释放并验证配置 HID | **macOS 首轮通过（2026-11-14）**：UAC2、键盘 HID、配置 HID 并发录音、键事件与配置通信正常；Windows / Linux、热插拔和休眠恢复待补 |
 | 3. 编码与无线分测 | G.722 标准向量对拍；用合成数据测试 ESP-NOW 丢包、乱序、吞吐、配对和心跳 | **G.722 已测（2026-11-14）**：与 ffmpeg 逐比特一致、C3 实机 3.26 ms/帧；ITU 官方向量仍缺。**ESP-NOW 已测（2026-11-14）**：1 米直视信道 1 下四轮零丢包、突发 406–507 kbit/s、RTT 平均 5.7–8.2 ms、20 按键事件全应用且 40 次重传全抑制、配对与加密单播通过，详见 `firmware/tests/espnow/README.md`。**未做**：重启后自动按旧绑定重连、距离/穿墙/干扰、与音频并发 |
 | 4. 音频全链路 | C3 采集编码，S3 解码、缓冲并输出 USB 音频 | **macOS 已打通（2026-11-15）**：C3 经 ES8311+I2S 采集 16 kHz/16 bit/单声道，每 20 ms 编码一帧 G.722 并一帧一包加密单播到 S3；S3 解码后经自适应环形缓冲输出到 UAC2 端点，主机侧枚举为 16 kHz 单声道麦克风并录到真实音频。缓冲采用高/低水位自适应补偿吸收时钟漂移（`firmware/components/audio_jitter/`，240 605 项主机侧检查通过）。30 分钟连续录音判分全过（83 997 帧零失败、89 505 帧零丢包、零溢出、零欠载、录音 1799.78 s 且全零静音块为 0）。**未做**：ASR 与有线麦基线对比、Windows/Linux、距离/穿墙/干扰；**漂移补偿的稳态行为未在真机压到**（本对板卡漂移仅约 0.00017%），详见 `firmware/tests/audio_link/README.md` |
-| 5. 按键与故障联调 | 加入运行时映射、ACK、去重和 all-keys-up，注入丢包、掉线、重启 | **macOS 已打通（2026-11-15）**：C3 经 ADC 电阻梯窗口分类与去抖（`components/key_scan`）生成事件，`components/key_tx` 同 seq 重传直至 ACK；S3 按 seq 去重后查 `components/key_map` 映射（NVS 持久化于 `components/key_store`，命名空间 `mickeys`）输出 HID 报告，KEY_ACK 在报告被主机接收后回发。心跳 1 Hz、S3 断链 3 s 超时 all-keys-up、会话变更/USB 重置/挂起/映射变更均触发释放。真机首轮 68 事件（34 对 UP/OK）零丢弃零过期、11 次重传全部被抑制或送达，主机经 IOHIDManager 观察到成对 Alt/Enter；判分脚本 `firmware/tests/key_link/check.sh`，实测与边界见其 README。**macOS 验收已补完（2026-11-16）**：100 次按键、20 次强制断链、音频+按键并发均 PASS，证据 `.tmp/stage5-accept-20261116-1700/`，见 `firmware/tests/key_link/README.md` 4.2。**未做**：配置命令集（读/写映射，含 `map_change` 宿主注入）、Windows/Linux、状态显示 |
+| 5. 按键与故障联调 | 加入运行时映射、ACK、去重和 all-keys-up，注入丢包、掉线、重启 | **macOS 已打通（2026-11-15）**：C3 经 ADC 电阻梯窗口分类与去抖（`components/key_scan`）生成事件，`components/key_tx` 同 seq 重传直至 ACK；S3 按 seq 去重后查 `components/key_map` 映射（NVS 持久化于 `components/key_store`，命名空间 `mickeys`）输出 HID 报告，KEY_ACK 在报告被主机接收后回发。心跳 1 Hz、S3 断链 3 s 超时 all-keys-up、会话变更/USB 重置/挂起/映射变更均触发释放。真机首轮 68 事件（34 对 UP/OK）零丢弃零过期、11 次重传全部被抑制或送达，主机经 IOHIDManager 观察到成对 Alt/Enter；判分脚本 `firmware/tests/key_link/check.sh`，实测与边界见其 README。**macOS 验收已补完（2026-11-16）**：100 次按键、20 次强制断链、音频+按键并发均 PASS，证据 `.tmp/stage5-accept-20261116-1700/`，见 `firmware/tests/key_link/README.md` 4.2。**未做（部分已补）**：配置 HID 读/写/恢复映射与 `tools/micctl` 已落地（[config-hid.md](config-hid.md)），真机 `map_change` 验收与配对/解绑命令仍缺；Windows/Linux、状态显示未做 |
 
 ## 7. 首版建议验收基线
 
@@ -159,5 +159,6 @@ C3 只对去抖后的状态变化生成事件，不依赖电脑端自动重复�
 - [ESP-NOW 官方文档](https://docs.espressif.com/projects/esp-idf/en/latest/esp32/api-reference/network/esp_now.html)：信道、加密、发送回调及应用层 ACK/重传要求。
 - [ITU-T G.722](https://www.itu.int/rec/T-REC-G.722/en)：64 kbit/s 编码标准及测试资料入口。
 - 本项目无线协议：[protocol.md](protocol.md)：帧格式、序号与去重规则、心跳计数、配对流程及其安全边界。
+- 配置 HID 线格式：[config-hid.md](config-hid.md)：S3 vendor 配置接口命令与 64B 状态布局。
 - 当前实施进度与下一步排序：[ROADMAP.md](ROADMAP.md)：把第 6 节的阶段表映射到仓库现状，列出未验证项、缺口和待决策问题。
 - [ESP USB Device UAC](https://docs.espressif.com/projects/esp-iot-solution/en/latest/usb/usb_device/usb_device_uac.html)：UAC 回调、缓冲和 OS 兼容性验证参考；不代表已选定该组件。

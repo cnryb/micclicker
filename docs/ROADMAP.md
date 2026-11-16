@@ -1,13 +1,13 @@
 # MicClicker 实施路线图
 
-> 生成时间：2026-11-16（Asia/Shanghai）更新。基线提交 `f82699e feat(audio): 打通第 4 阶段音频全链路`；按键链路（A1–A5、A8）已实现；**macOS 第 5 阶段验收（100 次按键、20 次强制断链、并发判分）已于 2026-11-16 补完**；工作线 B/C 与 `map_change` 宿主入口仍未开始。
+> 生成时间：2026-11-16（Asia/Shanghai）更新。基线提交 `f82699e feat(audio): 打通第 4 阶段音频全链路`；按键链路（A1–A5、A8）已实现；**macOS 第 5 阶段验收（100 次按键、20 次强制断链、并发判分）已于 2026-11-16 补完**；工作线 C 的状态/映射子集（C1 命令 + `tools/micctl`）已落地，配对/解绑与真机 `map_change` 验收仍待做；工作线 B 未开始。
 > 本文回答两个问题：**现在到哪一步了**、**下一步做什么**。判断依据是仓库里的代码与实测记录，不是计划表；每条结论都标了证据位置，未验证项单列，不与已验证项混写。
 
 ## 1. 一句话结论
 
-音频方向（第 1–4 阶段）已经端到端打通并有 30 分钟真机判分记录；**按键方向（第 5 阶段）已于 2026-11-15 实现，macOS 验收于 2026-11-16 补完**（100 次按键、20 次强制断链、音频+按键并发均 PASS，见 `firmware/tests/key_link/README.md` 4.2）。当前固件在 macOS 上「能录音、能配对、能重连、按键能出成对 HID 事件且断链不卡键」。还缺：映射的配置命令集（工作线 C1，含 `map_change`）、状态显示和跨平台验收（工作线 B）。
+音频方向（第 1–4 阶段）已经端到端打通并有 30 分钟真机判分记录；**按键方向（第 5 阶段）已于 2026-11-15 实现，macOS 验收于 2026-11-16 补完**（100 次按键、20 次强制断链、音频+按键并发均 PASS，见 `firmware/tests/key_link/README.md` 4.2）。当前固件在 macOS 上「能录音、能配对、能重连、按键能出成对 HID 事件且断链不卡键」。配置 HID 已支持读状态与读/写/恢复映射（[config-hid.md](config-hid.md)、`tools/micctl/`）；还缺：配对/解绑命令、C3 状态显示、跨平台验收（工作线 B）以及配置工具真机验收记录。
 
-下一步（见第 5 节）进入**工作线 C**（先做配置 HID 命令集 C1，再做最小跨平台宿主）；工作线 B 可并行。
+下一步（见第 5 节）：完成 C 的真机验收与配对/解绑；工作线 B 可并行。
 
 ## 2. 阶段进度总览
 
@@ -17,8 +17,8 @@
 | 2. USB 原型 | **macOS 完成，跨平台未开始** | UAC2 麦克风 + 键盘 HID + vendor 配置 HID 并发工作 | `firmware/README.md`「USB 复合设备原型」节、[hardware-s3.md](hardware-s3.md) 6.2 | Windows/Linux、热插拔、休眠恢复、UAC1/UAC2 取舍 |
 | 3. 编码与无线分测 | **完成（两项例外）** | G.722 与 ffmpeg 逐比特一致、C3 实测 3.26 ms/帧；ESP-NOW 四轮零丢包、406–507 kbit/s、RTT 5.7–8.2 ms、配对与加密单播往返 | [firmware/tests/g722/README.md](../firmware/tests/g722/README.md)、[firmware/tests/espnow/README.md](../firmware/tests/espnow/README.md) | 例外①ITU 官方向量缺（需 ITU 账号）；例外②配对明文、无防中间人 |
 | 4. 音频全链路 | **macOS 完成** | C3 采集→G.722→单播→S3 解码→自适应缓冲→UAC2，30 分钟判分 11 项全过 | [firmware/tests/audio_link/README.md](../firmware/tests/audio_link/README.md) 第 3 节 | ASR 基线、延迟分解、漂移压测、跨平台 |
-| 5. 按键与故障联调 | **macOS 验收完成（2026-11-16）** | 100 次按键 / 20 次断链 / 并发录音判分均 PASS；心跳、超时 all-keys-up 已验证 | `firmware/tests/key_link/README.md` 4.2 | 映射配置命令集、`map_change` 宿主注入、状态显示、Windows/Linux |
-| 配置工具 | **未开始** | 仅有一份一次性 macOS 取证探针（`.tmp/usb-host-prototype-20261114/hid_probe.c`，不入库） | 无 | 无 `tools/` 目录，无跨平台技术选型 |
+| 5. 按键与故障联调 | **macOS 验收完成（2026-11-16）** | 100 次按键 / 20 次断链 / 并发录音判分均 PASS；心跳、超时 all-keys-up 已验证 | `firmware/tests/key_link/README.md` 4.2 | 配对/解绑配置命令、状态显示、Windows/Linux；`map_change` 宿主真机验收 |
+| 配置工具 | **状态/映射子集已落地** | 配置 HID：`READ_MAP`/`WRITE_MAP`/`RESET_MAP` + flags `paired`/`link_up`；CLI `tools/micctl/`；主机侧 8 项编解码单测 PASS | [config-hid.md](config-hid.md)、`tools/micctl/` | 配对/解绑 opcode；真机 status/map 验收证据；Windows |
 | 状态显示 | **未开始** | C3 屏幕/背光引脚已固化（`board.h`），产品固件里零行显示代码 | 无 | DESIGN 4.1 要求用屏幕区分未配对/配对中/离线/已连接 |
 
 ## 3. 当前代码实际具备的能力
@@ -131,10 +131,11 @@
 
 依赖 A4（映射接口）与 A5（状态字段），所以排在 A 之后。
 
-1. 先在 S3 配置 HID 里扩出「读映射 / 写映射 / 读链路状态 / 发起配对 / 解除绑定」的命令集，保持 64 B 报告与向后兼容的布局（现有 0–47 字节不能改语义，只能追加）。
-2. 选型一个最小跨平台宿主（macOS/Linux 先，Windows 后），只做按需运行的状态查看与配置，不做常驻转发。
+1. **已做（状态/映射子集）**：S3 配置 HID 扩出读映射 / 写映射 / 恢复默认，并增强 GET flags（`paired`/`link_up`）；0–47 语义不变；线格式见 [config-hid.md](config-hid.md)。按需 CLI：`tools/micctl/`（Python + hidapi，macOS/Linux 先）。
+2. **仍未做**：发起配对 / 解除绑定 opcode（解绑需 C3 DOWN 物理确认）；Windows 宿主验证；正式 VID/PID。
 3. 产品标识：`303a:4014` 是原型 PID，正式 VID/PID、产品字符串、序列号策略需要确定（属用户决策，见第 6 节）。
 4. 状态显示：C3 屏幕/背光四态（未配对/配对中/离线/已连接），引脚已在 `board.h`，需要挑一个轻量 ST7789 驱动并验证反色（`MIC_BOARD_LCD_INVERT_COLOR=1`）与人眼观感。
+5. **真机验收清单（macOS，证据进 `.tmp/config-hid-.../`）**：烧录后 `./tools/micctl/run.sh status` → `map get` → `map set` 非默认 → 重启后 `map get` 仍为新值 → 按 UP/OK 确认 HID 跟随 → `map reset`。
 
 ## 6. 需要你决策的开放问题
 
@@ -158,14 +159,15 @@
       ──► A5/A6（心跳 + 超时 + all-keys-up）        ┘
       ──► A7/A8（延迟打点 + 判分脚本）
       ──► 第 5 阶段退出验收（并发、100 次按键、20 次强制断链）✅ macOS 2026-11-16
-      ──► C1/C2（配置 HID 命令集 + 最小宿主工具）   ← 当前
+      ──► C1/C2 状态+映射（配置 HID + micctl）✅ 源码 2026-11-16；真机验收待做
+      ──► C 余下：配对/解绑命令 + 真机 map_change 验收 + C3 屏幕   ← 当前
       ──► B（Windows → Linux → 距离/干扰 → ASR 基线）
 ```
 
 里程碑：
 
 - **M1（第 5 阶段退出）**：按下 C3 的 UP/OK 能稳定产生成对 HID 事件；拔掉 C3、按 S3 复位、USB 重插都不留卡键；`key_link/check.sh` 一条命令 PASS。
-- **M2（可用原型）**：配置工具能读状态、改映射并持久化，解除绑定后必须重新配对；C3 屏幕显示四态。
+- **M2（可用原型）**：配置工具能读状态、改映射并持久化，解除绑定后必须重新配对；C3 屏幕显示四态。（映射读写源码已有，缺真机证据与配对/解绑。）
 - **M3（首版验收）**：三个平台各跑完 DESIGN 第 7 节验收基线（30 分钟录音 + 100 次按键 + 20 次强制断链 + 资源统计 + ASR 基线）。
 
 ## 8. 半天内可完成的整理项

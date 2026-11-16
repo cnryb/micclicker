@@ -126,7 +126,7 @@ C3 必须依次完成四个阶段。每个阶段等待目标键态最多 60 秒�
 
 默认 S3 构建使用 `303a:4014`，四个接口依次为 UAC2 Audio Control、Audio Streaming、标准键盘 HID、vendor 配置 HID；没有 CDC/MIDI。音频为 UAC2、16 kHz、16-bit、单声道、1 kHz 正弦波。音频等步 IN 为 `0x81`，键盘 IN 为 `0x82`，配置 HID 为 OUT `0x03` / IN `0x83`。
 
-vendor 报告使用 **Report ID 0 + 64 字节 payload**，不要换成编号报告，否则会增加一个字节并与端点缓冲冲突。当前命令：
+vendor 报告使用 **Report ID 0 + 64 字节 payload**，不要换成编号报告，否则会增加一个字节并与端点缓冲冲突。线格式权威定义见 [../docs/config-hid.md](../docs/config-hid.md)。当前命令：
 
 | 命令 | 含义 |
 | :--- | :--- |
@@ -134,8 +134,13 @@ vendor 报告使用 **Report ID 0 + 64 字节 payload**，不要换成编号报�
 | `0x02` | 触发 UP 绑定按下，随后释放（当前默认映射为 Right Alt） |
 | `0x03` | Enter 按下，随后释放 |
 | `0x04` | 全部按键释放 |
+| `0x10` | READ_MAP：下次非 BUSY 的 GET 在字节 48–63 返回 16B 映射 blob |
+| `0x11` | WRITE_MAP：`[0x11]+16B blob`，校验后持久化并 `map_change` 释放 |
+| `0x12` | RESET_MAP：恢复默认映射 |
 
-输出命令经 HID Output/SET_REPORT 进入有界队列；状态经 GET_REPORT Input 读取，不能套用 Feature API。状态第 0 字节为版本，随后是状态标志、最后命令和结果。计数偏移：ping 4、Alt 8、Enter 12、all-up 16、拒绝 20、音频生产 24、短写 28、实际 USB 包 32、实际 USB 字节 36、空包 40、alt 变化 44，均为小端 `uint32_t`。非法命令只增加拒绝计数并返回错误，不改变按键状态；释放发送失败会保留 pending 并重试。
+输出命令经 HID Output/SET_REPORT 进入有界队列（整帧 64B）；状态经 GET_REPORT Input 读取，不能套用 Feature API。状态第 0 字节为版本，随后是状态标志（含 `paired`/`link_up`）、最后命令和结果。计数偏移：ping 4、Alt 8、Enter 12、all-up 16、拒绝 20、音频生产 24、短写 28、实际 USB 包 32、实际 USB 字节 36、空包 40、alt 变化 44，均为小端 `uint32_t`；48–63 为链路/缓冲计数（或 READ_MAP 门控下的 map blob）。非法命令只增加拒绝计数并返回错误，不改变按键状态；释放发送失败会保留 pending 并重试。
+
+按需配置 CLI：`tools/micctl/`（`./tools/micctl/run.sh status|map ...`）。
 
 ### macOS 首轮实测（2026-11-14）
 
@@ -145,7 +150,7 @@ vendor 报告使用 **Report ID 0 + 64 字节 payload**，不要换成编号报�
 - 录音中发送 Left Alt 并查询配置：6 秒并发录音主频 **1000.00 Hz**、RMS **8484.58**，Alt 成对、ping 成功。证据：`.tmp/usb-prototype-20261114-171850/mic-concurrent.wav`、`analysis.log` 和 `.tmp/usb-host-prototype-20261114/concurrent-alt.log`。
 - alt 0 下 `produced=0`、`usb_packets=0`，不再持续生产；实际发送计数来自 `tud_audio_tx_done_isr`，短写单独统计。TinyUSB 的 EP FIFO 可覆盖旧数据，短写不等于溢出计数，不能把两者混为一谈。
 
-上述主机探针位于 `.tmp/usb-host-prototype-20261114/`，是一次性 macOS 取证工具，不是跨平台产品配置工具。Windows / Linux、热插拔、休眠恢复、至少 30 分钟连续录音和异常采样率 SET_CUR 的驱动层前置校验仍未完成；UAC1 是否需要在 Windows 目标版本上采用也留待后续决定。
+早期主机探针位于 `.tmp/usb-host-prototype-20261114/`（一次性取证，不入库）。产品配置入口为 `tools/micctl/`。配对/解绑命令与 Windows / Linux、热插拔、休眠恢复、至少 30 分钟连续录音和异常采样率 SET_CUR 的驱动层前置校验仍未完成；UAC1 是否需要在 Windows 目标版本上采用也留待后续决定。
 
 ## ESP-NOW（第 3 阶段）
 
