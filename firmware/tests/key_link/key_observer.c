@@ -68,31 +68,26 @@ static void key_event(void *context, IOReturn result, void *sender, IOHIDValueRe
     uint32_t usage = IOHIDElementGetUsage(element);
     long state = (long)IOHIDValueGetIntegerValue(value);
 
-    // The host reports each modifier bit and each keycode slot as its own element. A
-    // value of 0 for a keycode slot is the empty slot, not a release, so it is ignored
-    // rather than counted as an "up" for usage 0.
-    if (usage >= 0xE0 && usage <= 0xE7) {
-        // Modifier bits: track which ones were seen so the summary can show the report
-        // really carried a modifier (Right Alt for UP by default) rather than an
-        // ordinary key.
-        if (state) {
-            s_mods_seen |= (uint8_t)(1u << (usage - 0xE0));
-        }
+    // Only count real keyboard usages. macOS also delivers ErrorRollOver (1-3), empty
+    // keycode slots (0), and occasional UINT32_MAX phantoms on the same report change;
+    // counting those as ups makes a clean run look unbalanced.
+    bool is_modifier = (usage >= 0xE0 && usage <= 0xE7);
+    bool is_keycode = (usage >= 0x04 && usage <= 0xDF);
+    if (!is_modifier && !is_keycode) {
+        return;
+    }
+
+    // The host reports each modifier bit and each keycode slot as its own element.
+    if (is_modifier && state) {
+        s_mods_seen |= (uint8_t)(1u << (usage - 0xE0));
     }
 
     if (state) {
         ++s_down;
-        if (usage >= 0xE0 && usage <= 0xE7) {
-            s_mods_seen |= (uint8_t)(1u << (usage - 0xE0));
-        } else if (usage != 0) {
+        if (is_keycode) {
             note_usage(usage);
         }
     } else {
-        // A release of usage 0 is the empty slot, which the host reports on every report
-        // change; counting it would turn one press into dozens of "ups".
-        if (usage == 0) {
-            return;
-        }
         ++s_up;
     }
 

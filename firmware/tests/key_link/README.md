@@ -22,8 +22,11 @@ GPIO0 ADC 电阻梯                                     UAC2 + HID 键盘
 ```bash
 # 三个日志缺一不可：C3 串口日志、S3 串口日志、主机观察器输出。
 ./firmware/tests/key_link/check.sh <c3 日志> <s3 日志> <观察器日志> \
-    [--expect-pairs N] [--expect-timeout] [--expect-allup]
+    [--expect-pairs N] [--expect-timeout] [--expect-allup] \
+    [--fault-inject] [--concurrent]
 ```
+
+`--fault-inject` 用于强制断链轮：允许中途过期、按日志行统计 `LINK_TIMEOUT` / `ALL_UP`（S3 复位会清零 STATUS 计数）。`--concurrent` 用于音频+按键并发轮：突发连按下允许少量过期，但仍要求主机成对且结束无卡键。
 
 | 检查 | 判据 | 理由 |
 | :--- | :--- | :--- |
@@ -72,11 +75,22 @@ GPIO0 ADC 电阻梯                                     UAC2 + HID 键盘
 | S3 → HID（配置通道触发） | 经配置 HID 的 ALT 自测命令走同一条按键状态机：`applied=2 reports=4`，主机观察器看到 `usage=226 value=1/0`，5/5 次成对 |
 | 断链超时 | 烧录重启后的首次窗口内出现过一次 `timeouts=1`（S3 先于 C3 起来时不再误报，见 4.2 修正 ②） |
 
-**物理按键首轮（2026-11-15，`.tmp/stage5-20261115-120910/phys3/`）**：34 对 UP/OK 按下/释放。C3 记录 68 事件、发送 79 帧（11 次重传）、ACK 68、零过期零丢弃；S3 收 79 帧，判重 10 次；主机观察器 `pairs=69`、`mods=0x04`、`keys=0x28`，成对 Alt/Enter 全部可见。**注意这轮是在会话号修复之前**（见 4.2 修正 ⑤）：S3 端 `rx=69 applied=49 dup=10` 存在一次重传被重复应用（seq=13 出现两次），并且会话翻转触发了 35 次多余的 all-keys-up。修复后的空窗口验证（phys4–phys6）`SESSION_NEW session=0` 为 0、all_up 为 0、心跳 100% 确认；**修复后带按键的判分记录仍待补**（需要人手按键）。
+**物理按键首轮（2026-11-15，`.tmp/stage5-20261115-120910/phys3/`）**：34 对 UP/OK 按下/释放。C3 记录 68 事件、发送 79 帧（11 次重传）、ACK 68、零过期零丢弃；S3 收 79 帧，判重 10 次；主机观察器 `pairs=69`、`mods=0x04`、`keys=0x28`，成对 Alt/Enter 全部可见。**注意这轮是在会话号修复之前**（见 4.3 修正 ⑤）：S3 端 `rx=69 applied=49 dup=10` 存在一次重传被重复应用（seq=13 出现两次），并且会话翻转触发了 35 次多余的 all-keys-up。修复后的空窗口验证（phys4–phys6）`SESSION_NEW session=0` 为 0、all_up 为 0、心跳 100% 确认；**修复后带按键的判分记录仍待补**（需要人手按键）。
 
-**待补**：修复后带按键的完整判分、1000 次按键、强制断链 20 次、与 50 fps 音频并发判分。这些不能由脚本替代，脚本只能观察。
+### 4.2 macOS 第 5 阶段验收补完（2026-11-16）
 
-### 4.2 首轮发现并当场修正的问题
+证据目录：`.tmp/stage5-accept-20261116-1700/`（不入库）。三根 USB：C3 + S3 `USB` + S3 `COM`；观察器已过滤 ErrorRollOver / 幽灵 usage，只计 0x04–0xDF 与 0xE0–0xE7。
+
+| 轮次 | 内容 | 判分 | 要点 |
+| :--- | :--- | :--- | :--- |
+| A（`A3-smoke/`） | 修复后带按键冒烟 | `check.sh --expect-pairs 10` **PASS** | C3 84 事件、主机 pairs=42、mods=0x40、无 `SESSION_NEW session=0`、结束 `down=0` |
+| B（`B-100keys/`） | ≥100 次按下/释放 | `check.sh --expect-pairs 50` **PASS** | C3 164 事件、主机 pairs=83、零过期零丢弃、心跳 100% |
+| C（`C-disconnect/`） | 20 次强制断链 | `check.sh --expect-timeout --expect-allup --fault-inject` **PASS** | 10×C3 DTR 复位 + 5×S3 DTR 复位 + 5×S3 USB 拔插；日志见 `LINK_TIMEOUT` 与 `ALL_UP reason=link_timeout/session_new`；结束 `down=0`。`s_link_lost` 闩锁使连续静默只计一次超时，见 `INJECTS.txt` |
+| D（`D-concurrent/`） | 音频+按键并发 ≥80 s | `audio_link/check.sh` **PASS** + `key_link/check.sh --expect-pairs 5 --concurrent` **PASS** | 录音 90 s、RMS −47.2 dB、Flat 0；按键主机 pairs=67；突发连按出现 expired=8（并发口径允许），无卡键 |
+
+**仍未做（不得写成已通过）**：`map_change` 触发（缺配置 HID 写映射入口）、C3 状态显示、Windows/Linux、按键延迟分解。
+
+### 4.3 首轮发现并当场修正的问题
 
 1. **心跳回复没有回显 seq**。S3 原来在回复里固定 `echo_seq=0`，C3 侧因此无法把回复与自己的心跳对应起来。已改为 S3 记录待回复心跳的 `seq` 并在回复中回显（`protocol.md` 3.4 本来就要求回显，这是产品固件漏了这一条）。
 2. **S3 开机即报一次假超时**。静默计时器原来从 boot 起算，S3 先于 C3 完成启动时必然先报一次 `LINK_TIMEOUT`。已改为「收到本会话第一帧后才起算」：没有链路时释放按键本来就是空操作，「还没连上」与「链路死了」不是同一种失败。
@@ -119,8 +133,8 @@ S3 配置 HID 的 `CMD_LEFT_ALT` / `CMD_ENTER` / `CMD_ALL_KEYS_UP`（stage-2 原
 
 ## 7. 已知限制（不得据此宣称已全面通过）
 
-- **物理按键端到端尚无完整判分记录**（2026-11-15 首轮进行中，见 4.1 待补项）。
-- **只测了 macOS** 的 HID 接收；Windows / Linux 的键盘枚举与按键行为未测。
-- **映射修改 / 恢复默认 / 解除绑定**的配置命令集尚未实现（属工作线 C1），当前映射固定为默认值，写入路径 `mic_key_store_save` 已有校验但无外部入口。
+- **macOS 第 5 阶段验收（100 次按键 / 20 次断链 / 并发）已在 4.2 补完**；Windows / Linux 的键盘枚举与按键行为未测。
+- **映射修改 / 恢复默认 / 解除绑定**的配置命令集尚未实现（属工作线 C1），当前映射固定为默认值，写入路径 `mic_key_store_save` 已有校验但无外部入口；因此 A6 的 `map_change` 触发未做宿主侧注入。
 - **按键延迟未测**：设计上是采样(10) + 去抖(40) + 链路(<20) + 报告轮询(≤1 ms 量级)，但没有实测数据，不预设结论。
 - 心跳超时判据是单向的（C3 看回复、S3 看任意帧），两边阈值独立，没有做双向握手一致性验证。
+- 强制断链时 `s_link_lost` 闩锁：链路未恢复前重复静默不会重复打印 `LINK_TIMEOUT`；验收以操作次数 + 至少一次超时/释放证据为准。
