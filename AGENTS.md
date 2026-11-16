@@ -18,7 +18,7 @@ MicClicker 是一套一对一无线语音输入与快捷键设备：
 
 目录与构建入口：
 
-- `firmware/s3/`：S3 工程。默认是第 4 阶段音频全链路接收端（`main/audio_link.c` 收包解码进环形缓冲，`main/usb_prototype.c` 的音频任务从缓冲取数写 UAC2 端点）；`MICCLICKER_STAGE1_SELFTEST=y` 时是 PSRAM / Wi-Fi / BOOT 自检，`--probe` 时是探针接收端。
+- `firmware/s3/`：S3 工程。默认是第 4 阶段音频全链路接收端（`main/audio_link.c` 收包解码进环形缓冲，`main/usb_prototype.c` 的音频任务从缓冲取数写 UAC2 端点）；`main/mic_led.c` 负责板载 RGB 灯（数据脚 GPIO48 的单线可寻址灯，开机发黑帧熄灭，按住 BOOT 时点亮，见 hardware-s3.md 第 7 节）；`MICCLICKER_STAGE1_SELFTEST=y` 时是 PSRAM / Wi-Fi / BOOT 自检，`--probe` 时是探针接收端。
 - `firmware/c3/`：C3 工程。默认是第 4 阶段音频全链路发送端（`main/audio_task.c` 采集编码发送，`main/capture.c` 驱动 ES8311+I2S）；`MICCLICKER_ROLE_SELFTEST=y` 时是 Wi-Fi / ADC 自检，`--probe` 时是探针发送端。板级差异集中在 `main/board.h`。
 - `firmware/components/wifi_scan/`：两端共享扫描组件，不记录 SSID/BSSID，不自动擦除 NVS。
 - `firmware/components/g722/`：G.722 编解码组件（公有领域，非 LGPL），帧长固定 320 样本 / 160 字节。

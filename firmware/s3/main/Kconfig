@@ -16,6 +16,17 @@ config MICCLICKER_ESPNOW_PROBE_RECEIVER
         Pair with the C3 sender probe on the same channel. The probe does not
         enumerate USB, so the board is reachable only over the CH343 console.
 
+config MICCLICKER_LED_GPIO
+    int "GPIO driving the onboard addressable RGB LED"
+    range 0 48
+    default 48
+    help
+        Data line of the board's single-wire RGB LED. Measured on the
+        ESP32-S3-N16R8 board as GPIO48, which is also the pin the factory
+        Arduino demo drove through RGB_BUILTIN. The product firmware sends a
+        black frame here at boot, so the LED is dark unless something asks for
+        a colour.
+
 config MICCLICKER_ESPNOW_PROBE_CHANNEL
     int "ESP-NOW probe channel (2.4 GHz)"
     range 1 13

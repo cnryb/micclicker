@@ -1,5 +1,7 @@
 #include "sdkconfig.h"
 
+#include "mic_led.h"
+
 #if CONFIG_MICCLICKER_STAGE1_SELFTEST
 void micclicker_stage1_selftest_run(void);
 
@@ -27,6 +29,9 @@ void micclicker_usb_prototype_start(void);
 
 void app_main(void)
 {
+    // First action: the addressable RGB LED shows white after power-up until it
+    // receives a frame, so park it dark before USB enumeration and audio start.
+    mic_led_start();
     micclicker_usb_prototype_start();
 }
 #endif

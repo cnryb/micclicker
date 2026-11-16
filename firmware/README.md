@@ -4,7 +4,7 @@
 
 ## 目录
 
-- `s3/`：ESP32-S3-N16R8 固件。默认构建 UAC2 麦克风 + 标准键盘 HID + vendor 配置 HID，麦克风音频来自无线链路（`main/audio_link.c` 收包解码进环形缓冲，`main/usb_prototype.c` 的音频任务从缓冲取数写端点）；`MICCLICKER_STAGE1_SELFTEST=y` 时改为 PSRAM / Wi-Fi / BOOT 自检；`--probe` 时为第 3 阶段探针接收端。两端 16 kHz、16-bit 小端 PCM、单声道。
+- `s3/`：ESP32-S3-N16R8 固件。默认构建 UAC2 麦克风 + 标准键盘 HID + vendor 配置 HID，麦克风音频来自无线链路（`main/audio_link.c` 收包解码进环形缓冲，`main/usb_prototype.c` 的音频任务从缓冲取数写端点）；`main/mic_led.c` 负责板载 RGB 灯（数据脚 GPIO48，开机发黑帧熄灭，按住 BOOT 时点亮）；`MICCLICKER_STAGE1_SELFTEST=y` 时改为 PSRAM / Wi-Fi / BOOT 自检；`--probe` 时为第 3 阶段探针接收端。两端 16 kHz、16-bit 小端 PCM、单声道。
 - `c3/`：AI Passport / ESP32-C3 固件。默认是第 4 阶段音频链路角色（`main/audio_task.c` 采集编码发送，`main/capture.c` 驱动 ES8311+I2S）；`MICCLICKER_ROLE_SELFTEST=y` 时退回 Wi-Fi 扫描 + 四键态 ADC + G.722 向量自检；`--probe` 时为第 3 阶段探针发送端。
 - `components/wifi_scan/`：两端共享的最小 Wi-Fi 扫描组件，不记录 SSID/BSSID，不自动擦除 NVS。
 - `components/g722/`：G.722 64 kbit/s 编解码组件，内嵌 WebRTC/SpanDSP 的公有领域实现，帧长固定为 320 样本 / 160 字节。
