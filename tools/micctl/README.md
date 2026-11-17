@@ -6,13 +6,13 @@
 
 ## 依赖
 
-- Python 3.10+
-- `hid==1.0.6`（hidapi）
+- Python 3.9+
+- `hidapi==0.15.0`（`import hid`；不要装纯 ctypes 的 `hid` 包，它还要系统里另有 `libhidapi`）
 
 ```bash
 python3 -m venv .venv
-. .venv/bin/activate
-pip install -r requirements.txt
+source .venv/bin/activate
+python3 -m pip install -r requirements.txt
 ```
 
 ## 命令

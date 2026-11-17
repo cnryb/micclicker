@@ -2,6 +2,11 @@
 .tmp/
 .tmp-*
 
+# 本地 Python 虚环境与缓存（tools/micctl 等）
+.venv/
+**/__pycache__/
+*.py[cod]
+
 # ESP-IDF 本地构建配置与产物；可复现配置保留在 sdkconfig.defaults
 firmware/*/build/
 firmware/*/sdkconfig

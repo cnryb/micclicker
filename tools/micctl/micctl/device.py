@@ -21,7 +21,8 @@ def _import_hid():
         import hid  # type: ignore
     except ImportError as exc:
         raise DeviceError(
-            "missing dependency 'hid' (pip install -r tools/micctl/requirements.txt)"
+            "cannot import hidapi bindings (module name 'hid'). "
+            "In the project venv run: python3 -m pip install -r requirements.txt"
         ) from exc
     return hid
 
