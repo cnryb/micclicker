@@ -116,14 +116,19 @@ void micclicker_c3_audio_force_off(void)
     s_audio_armed = false;
 }
 
-static void arm_on_voice_key(uint8_t key_id)
+static void toggle_arm_on_voice_key(uint8_t key_id)
 {
     if (key_id != MIC_KEY_SLOT_UP && key_id != MIC_KEY_SLOT_DOWN) {
         return;
     }
+    // Same edge as the host hotkey: first press starts the ASR app and the stream,
+    // second press stops both. HID is emitted by the key path regardless.
     if (!s_audio_armed) {
         s_audio_armed = true;
         ESP_LOGI(TAG, "C3_AUDIO_ARM: ARM key=%s", key_name(key_id));
+    } else {
+        s_audio_armed = false;
+        ESP_LOGI(TAG, "C3_AUDIO_ARM: DISARM reason=voice_key key=%s", key_name(key_id));
     }
 }
 
@@ -337,7 +342,7 @@ static void key_task(void *argument)
                         // Arm/disarm follow the press edge only. HID still goes out for
                         // every event; disarm never synthesizes an extra voice hotkey.
                         if (events[i].event == MIC_KEY_EVENT_PRESS) {
-                            arm_on_voice_key(events[i].key_id);
+                            toggle_arm_on_voice_key(events[i].key_id);
                             disarm_on_ok(events[i].key_id);
                         }
                     }

@@ -45,13 +45,10 @@ static const char *TAG = "c3_audio";
 #define C3_AUDIO_TASK_PRIORITY 5
 // Log a health line every second, which matches the status cadence the USB side uses.
 #define C3_STATUS_PERIOD_US (1000 * 1000)
-// Key-armed streaming (DESIGN.md 5.1): keep the codec warm, but only encode+send while
-// armed. Silence tail is long on purpose so slow speech pauses do not cut the stream.
-#define C3_SILENCE_TAIL_MS 8000
+// Voice-key edge streaming (DESIGN.md 5.1): keep the codec warm, but only encode+send
+// while armed. Arm/disarm follow UP/DOWN edges in key_task; this task only enforces a
+// max armed duration so a forgotten session cannot stream forever.
 #define C3_MAX_ARMED_MS 120000
-// Mean absolute PCM above this counts as voice and resets the silence timer. Tuned for
-// the board's ~30 dB capture gain; raise if ambient noise never disarms.
-#define C3_VOICE_MEAN_ABS 120
 
 typedef struct {
     uint32_t frames_captured;
@@ -110,23 +107,12 @@ static bool send_current_frame(void)
     return false;
 }
 
-static int pcm_mean_abs(const int16_t *pcm, size_t samples)
-{
-    uint32_t sum = 0;
-    for (size_t i = 0; i < samples; ++i) {
-        int32_t sample = pcm[i];
-        sum += (uint32_t)(sample < 0 ? -sample : sample);
-    }
-    return (int)(sum / (uint32_t)samples);
-}
-
-// Track silence / max-session while armed. Returns false when this frame must not be
-// encoded or sent (either still idle, or just disarmed by a local rule).
-static bool armed_allows_send(const int16_t *pcm, size_t samples, int64_t now_us)
+// Returns false when this frame must not be encoded or sent. Max-session is the only
+// local auto-disarm here; voice-key edges and OK live in key_task.
+static bool armed_allows_send(int64_t now_us)
 {
     static bool was_armed;
     static int64_t armed_since_us;
-    static int64_t silence_since_us;
 
     bool armed = micclicker_c3_audio_armed();
     if (!armed) {
@@ -137,16 +123,6 @@ static bool armed_allows_send(const int16_t *pcm, size_t samples, int64_t now_us
     if (!was_armed) {
         was_armed = true;
         armed_since_us = now_us;
-        silence_since_us = now_us;
-    }
-
-    if (pcm_mean_abs(pcm, samples) >= C3_VOICE_MEAN_ABS) {
-        silence_since_us = now_us;
-    } else if (now_us - silence_since_us >= (int64_t)C3_SILENCE_TAIL_MS * 1000) {
-        micclicker_c3_audio_force_off();
-        ESP_LOGI(TAG, "C3_AUDIO_ARM: DISARM reason=silence_tail_ms=%d", C3_SILENCE_TAIL_MS);
-        was_armed = false;
-        return false;
     }
 
     if (now_us - armed_since_us >= (int64_t)C3_MAX_ARMED_MS * 1000) {
@@ -214,7 +190,7 @@ static void audio_task(void *argument)
 
         // Always read so the codec stays warm and the first armed frame has no init gap.
         // Encode and radio only run while the key path has armed streaming.
-        if (armed_allows_send(pcm, MIC_CAPTURE_FRAME_SAMPLES, frame_begin_us)) {
+        if (armed_allows_send(frame_begin_us)) {
             if (mic_g722_encode(&s_encoder, pcm, s_encoded) != ESP_OK) {
                 ++s_stats.encode_errors;
             } else {

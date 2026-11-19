@@ -15,7 +15,7 @@ ES8311 + I2S                                           UAC2 麦克风端点
 
 两端均为产品固件（非探针）：`./firmware/build.sh c3` 与 `./firmware/build.sh s3`。
 
-C3 为**键控武装推流**（见 [DESIGN.md](../../../docs/DESIGN.md) 5.1）：冷启动默认 `armed=0`，不编码不发音频包。验收前须按一次物理 **UP 或 DOWN** 开流；长稳窗口内须保持武装（持续或间隔少于约 8 s 的语音能量，否则静音尾会卸武装）。STATUS 行含 `armed=`。主机侧用电脑键盘停录、或微信「任意键停止」后，C3 仍可能再推约 8 s，属预期；按 OK 可立刻卸武装。
+C3 为**语音键同边沿开停推流**（见 [DESIGN.md](../../../docs/DESIGN.md) 5.1）：冷启动默认 `armed=0`，不编码不发音频包。验收前须按一次物理 **UP 或 DOWN** 开流；再按一次同一类语音键关流（与 OpenLess/微信热键同拍）。长稳窗口内保持武装即可，**无静音尾**，句中长停顿不会自动卸武装。STATUS 行含 `armed=`。微信若用空格等结束，C3 可能仍推流，再按 DOWN 或 OK 收尾；OK 可立刻卸武装。
 
 ## 2. 判分脚本
 
@@ -123,7 +123,7 @@ f=open('s3.log','wb');
 [f.write(d) or f.flush() for d in iter(lambda: s.read(4096), b'') if d]" &
 
 # 5) 按一次 C3 的 UP 或 DOWN 武装推流（日志应出现 C3_AUDIO_ARM: ARM）
-#    长稳期间保持有语音能量，避免约 8 s 静音尾卸武装；需要立刻停流时按 OK
+#    长稳期间保持 armed（不要再按语音键）；需要停流时再按一次 UP/DOWN，或按 OK
 
 # 6) 录音 30 分钟
 ffmpeg -y -f avfoundation -i ":0" -t 1800 -ar 16000 -ac 1 -c:a pcm_s16le rec30min.wav

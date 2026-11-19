@@ -49,8 +49,9 @@ void micclicker_c3_keys_on_heartbeat_ack(uint32_t echo_seq);
 // One log line of cumulative counters, emitted once per second next to the audio status.
 void micclicker_c3_keys_log_status(void);
 
-// Key-armed audio streaming (docs/DESIGN.md section 5.1): UP/DOWN press arms; OK,
-// silence tail, max session, or link loss disarms. Codec may stay warm while disarmed.
+// Voice-key edge streaming (docs/DESIGN.md section 5.1): UP/DOWN press toggles arm
+// (idle→arm, armed→disarm) while still emitting HID; OK, max session, or link loss
+// also disarm. Codec may stay warm while disarmed.
 bool micclicker_c3_audio_armed(void);
 
 // Clear the arm latch without emitting a voice hotkey. Safe from the key task, the
