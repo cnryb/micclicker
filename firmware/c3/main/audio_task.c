@@ -45,6 +45,13 @@ static const char *TAG = "c3_audio";
 #define C3_AUDIO_TASK_PRIORITY 5
 // Log a health line every second, which matches the status cadence the USB side uses.
 #define C3_STATUS_PERIOD_US (1000 * 1000)
+// Key-armed streaming (DESIGN.md 5.1): keep the codec warm, but only encode+send while
+// armed. Silence tail is long on purpose so slow speech pauses do not cut the stream.
+#define C3_SILENCE_TAIL_MS 8000
+#define C3_MAX_ARMED_MS 120000
+// Mean absolute PCM above this counts as voice and resets the silence timer. Tuned for
+// the board's ~30 dB capture gain; raise if ambient noise never disarms.
+#define C3_VOICE_MEAN_ABS 120
 
 typedef struct {
     uint32_t frames_captured;
@@ -103,11 +110,61 @@ static bool send_current_frame(void)
     return false;
 }
 
+static int pcm_mean_abs(const int16_t *pcm, size_t samples)
+{
+    uint32_t sum = 0;
+    for (size_t i = 0; i < samples; ++i) {
+        int32_t sample = pcm[i];
+        sum += (uint32_t)(sample < 0 ? -sample : sample);
+    }
+    return (int)(sum / (uint32_t)samples);
+}
+
+// Track silence / max-session while armed. Returns false when this frame must not be
+// encoded or sent (either still idle, or just disarmed by a local rule).
+static bool armed_allows_send(const int16_t *pcm, size_t samples, int64_t now_us)
+{
+    static bool was_armed;
+    static int64_t armed_since_us;
+    static int64_t silence_since_us;
+
+    bool armed = micclicker_c3_audio_armed();
+    if (!armed) {
+        was_armed = false;
+        return false;
+    }
+
+    if (!was_armed) {
+        was_armed = true;
+        armed_since_us = now_us;
+        silence_since_us = now_us;
+    }
+
+    if (pcm_mean_abs(pcm, samples) >= C3_VOICE_MEAN_ABS) {
+        silence_since_us = now_us;
+    } else if (now_us - silence_since_us >= (int64_t)C3_SILENCE_TAIL_MS * 1000) {
+        micclicker_c3_audio_force_off();
+        ESP_LOGI(TAG, "C3_AUDIO_ARM: DISARM reason=silence_tail_ms=%d", C3_SILENCE_TAIL_MS);
+        was_armed = false;
+        return false;
+    }
+
+    if (now_us - armed_since_us >= (int64_t)C3_MAX_ARMED_MS * 1000) {
+        micclicker_c3_audio_force_off();
+        ESP_LOGI(TAG, "C3_AUDIO_ARM: DISARM reason=max_session_ms=%d", C3_MAX_ARMED_MS);
+        was_armed = false;
+        return false;
+    }
+
+    return micclicker_c3_audio_armed();
+}
+
 static void audio_task(void *argument)
 {
     (void)argument;
 
-    s_session = make_session();
+    // Session is assigned in micclicker_c3_audio_start before this task and the key task
+    // start, so both ends of the product path share one number from the first frame.
     if (mic_g722_encoder_init(&s_encoder) != ESP_OK) {
         ESP_LOGE(TAG, "C3_AUDIO: FAIL reason=encoder_init");
         vTaskDelete(NULL);
@@ -155,18 +212,22 @@ static void audio_task(void *argument)
         }
         ++s_stats.frames_captured;
 
-        if (mic_g722_encode(&s_encoder, pcm, s_encoded) != ESP_OK) {
-            ++s_stats.encode_errors;
-            continue;
-        }
-        ++s_stats.frames_encoded;
+        // Always read so the codec stays warm and the first armed frame has no init gap.
+        // Encode and radio only run while the key path has armed streaming.
+        if (armed_allows_send(pcm, MIC_CAPTURE_FRAME_SAMPLES, frame_begin_us)) {
+            if (mic_g722_encode(&s_encoder, pcm, s_encoded) != ESP_OK) {
+                ++s_stats.encode_errors;
+            } else {
+                ++s_stats.frames_encoded;
 
-        // seq advances only after a successful send (docs/protocol.md section 3.1), so
-        // the builder is called with the *current* sequence number and only committed
-        // once the radio accepted the frame.
-        if (mic_link_build_audio(&s_frame, s_session, s_stats.seq, s_encoded) == ESP_OK) {
-            if (send_current_frame()) {
-                ++s_stats.seq;
+                // seq advances only after a successful send (docs/protocol.md section 3.1),
+                // so the builder is called with the *current* sequence number and only
+                // committed once the radio accepted the frame.
+                if (mic_link_build_audio(&s_frame, s_session, s_stats.seq, s_encoded) == ESP_OK) {
+                    if (send_current_frame()) {
+                        ++s_stats.seq;
+                    }
+                }
             }
         }
 
@@ -189,11 +250,13 @@ static void audio_task(void *argument)
             mic_session_info_t info;
             mic_session_get(&info);
             ESP_LOGI(TAG,
-                     "C3_AUDIO: STATUS paired=%d session=%u seq=%" PRIu32 " captured=%" PRIu32
-                     " encoded=%" PRIu32 " sent=%" PRIu32 " capture_err=%" PRIu32
-                     " encode_err=%" PRIu32 " send_err=%" PRIu32 " retries=%" PRIu32
-                     " late=%" PRIu32 " tx_ok=%" PRIu32 " tx_fail=%" PRIu32 " tx_err=%" PRIu32,
-                     info.paired ? 1 : 0, (unsigned)s_session, s_stats.seq, s_stats.frames_captured,
+                     "C3_AUDIO: STATUS armed=%d paired=%d session=%u seq=%" PRIu32
+                     " captured=%" PRIu32 " encoded=%" PRIu32 " sent=%" PRIu32
+                     " capture_err=%" PRIu32 " encode_err=%" PRIu32 " send_err=%" PRIu32
+                     " retries=%" PRIu32 " late=%" PRIu32 " tx_ok=%" PRIu32 " tx_fail=%" PRIu32
+                     " tx_err=%" PRIu32,
+                     micclicker_c3_audio_armed() ? 1 : 0, info.paired ? 1 : 0,
+                     (unsigned)s_session, s_stats.seq, s_stats.frames_captured,
                      s_stats.frames_encoded, s_stats.frames_sent, s_stats.capture_errors,
                      s_stats.encode_errors, s_stats.send_errors, s_stats.send_retries,
                      s_stats.late_frames, radio.tx_ok, radio.tx_fail, radio.tx_errors);
@@ -242,6 +305,8 @@ static void on_recv(const uint8_t mac[ESP_NOW_ETH_ALEN], const uint8_t *data, in
 
 void micclicker_c3_audio_start(void)
 {
+    s_session = make_session();
+
     // Both ends pair on the same fixed channel in the first product build. Pairing time
     // channel selection is a later concern; DESIGN.md section 4.1 only requires the two
     // ends to agree, and a fixed channel is the simplest way to guarantee it.

@@ -124,7 +124,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     map_set = map_sub.add_parser("set", help="write mapping (MOD:KEY hex pairs)")
     map_set.add_argument("--up", required=True, help="UP binding, e.g. 40:00")
-    map_set.add_argument("--down", required=True, help="DOWN binding, e.g. 00:00")
+    map_set.add_argument("--down", required=True, help="DOWN binding, e.g. 10:00")
     map_set.add_argument("--ok", required=True, help="OK binding, e.g. 00:28")
     map_set.set_defaults(func=cmd_map_set)
 

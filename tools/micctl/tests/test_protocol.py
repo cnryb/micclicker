@@ -11,7 +11,7 @@ class MapBlobTests(unittest.TestCase):
         decoded = p.decode_map_blob(blob)
         self.assertEqual(decoded.up.modifier, p.MOD_RIGHT_ALT)
         self.assertEqual(decoded.up.keycode, p.KEYCODE_NONE)
-        self.assertEqual(decoded.down.modifier, 0)
+        self.assertEqual(decoded.down.modifier, p.MOD_RIGHT_CTRL)
         self.assertEqual(decoded.down.keycode, p.KEYCODE_NONE)
         self.assertEqual(decoded.ok.modifier, 0)
         self.assertEqual(decoded.ok.keycode, p.KEYCODE_ENTER)

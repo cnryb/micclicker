@@ -36,8 +36,8 @@ esp_err_t mic_key_binding_validate(const mic_key_binding_t *binding)
         return ESP_ERR_INVALID_ARG;
     }
     if (binding->keycode == MIC_HID_KEYCODE_NONE) {
-        // "No output" is legal and is what DOWN carries by default. A modifier with no
-        // keycode is still meaningful on its own (Right Alt alone), so it is allowed.
+        // "No output" is legal (silent binding). A modifier with no keycode is still
+        // meaningful on its own (Right Alt / Right Ctrl alone), so it is allowed.
         return ESP_OK;
     }
     if (binding->keycode >= KEYCODE_RESERVED_MIN && binding->keycode <= KEYCODE_RESERVED_MAX) {
@@ -86,7 +86,7 @@ void mic_key_map_defaults(mic_key_map_t *map)
                                            .modifier = MIC_HID_MOD_RIGHT_ALT,
                                            .keycode = MIC_HID_KEYCODE_NONE};
     map->bindings[1] = (mic_key_binding_t){.key_id = MIC_KEY_ID_DOWN,
-                                           .modifier = 0,
+                                           .modifier = MIC_HID_MOD_RIGHT_CTRL,
                                            .keycode = MIC_HID_KEYCODE_NONE};
     map->bindings[2] = (mic_key_binding_t){.key_id = MIC_KEY_ID_OK,
                                            .modifier = 0,

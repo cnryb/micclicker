@@ -20,7 +20,7 @@ python3 -m pip install -r requirements.txt
 ```bash
 ./run.sh status
 ./run.sh map get
-./run.sh map set --up 40:00 --down 00:00 --ok 00:28
+./run.sh map set --up 40:00 --down 10:00 --ok 00:28
 ./run.sh map reset
 ```
 

@@ -19,7 +19,7 @@ MicClicker 是一套一对一无线语音输入与快捷键设备：
 目录与构建入口：
 
 - `firmware/s3/`：S3 工程。默认是第 4 阶段音频全链路接收端（`main/audio_link.c` 收包解码进环形缓冲，`main/usb_prototype.c` 的音频任务从缓冲取数写 UAC2 端点）；`main/mic_led.c` 负责板载 RGB 灯（数据脚 GPIO48 的单线可寻址灯，开机发黑帧熄灭，按住 BOOT 时点亮，见 hardware-s3.md 第 7 节）；`MICCLICKER_STAGE1_SELFTEST=y` 时是 PSRAM / Wi-Fi / BOOT 自检，`--probe` 时是探针接收端。
-- `firmware/c3/`：C3 工程。默认是第 4 阶段音频全链路发送端（`main/audio_task.c` 采集编码发送，`main/capture.c` 驱动 ES8311+I2S）；`MICCLICKER_ROLE_SELFTEST=y` 时是 Wi-Fi / ADC 自检，`--probe` 时是探针发送端。板级差异集中在 `main/board.h`。
+- `firmware/c3/`：C3 工程。默认是第 4 阶段音频全链路发送端（`main/audio_task.c` 键控武装后编码发送，`main/capture.c` 驱动 ES8311+I2S，`main/key_task.c` 按键与武装闩锁）；`MICCLICKER_ROLE_SELFTEST=y` 时是 Wi-Fi / ADC 自检，`--probe` 时是探针发送端。板级差异集中在 `main/board.h`。
 - `firmware/components/wifi_scan/`：两端共享扫描组件，不记录 SSID/BSSID，不自动擦除 NVS。
 - `firmware/components/g722/`：G.722 编解码组件（公有领域，非 LGPL），帧长固定 320 样本 / 160 字节。
 - `firmware/components/link_proto/`：ESP-NOW 应用层帧编解码与序号跟踪，对应 `docs/protocol.md`。
@@ -29,7 +29,7 @@ MicClicker 是一套一对一无线语音输入与快捷键设备：
 - `firmware/components/audio_jitter/`：接收端 PCM 环形缓冲与时钟漂移补偿（有界、溢出丢最旧、欠载遮蔽、高/低水位自适应）。
 - `firmware/components/key_scan/`：C3 侧 ADC 电阻梯窗口分类与去抖状态机（确认 40 ms / 保持 120 ms），主机侧可测。
 - `firmware/components/key_tx/`：C3 侧按键可靠投递状态机（同 seq 重传、按序号匹配 ACK、被拒发送不消耗尝试、有界队列），主机侧可测。
-- `firmware/components/key_map/`：按键映射表校验、NVS blob 编解码与 HID 报告编码（默认 UP=Right Alt、DOWN=保留、OK=Enter），主机侧可测。
+- `firmware/components/key_map/`：按键映射表校验、NVS blob 编解码与 HID 报告编码（默认 UP=Right Alt、DOWN=Right Ctrl、OK=Enter），主机侧可测。
 - `firmware/components/key_store/`：S3 侧映射持久化（NVS 命名空间 `mickeys`，单 blob，非法表拒绝写入），仅真机验证。
 - `firmware/tests/g722/`：G.722 主机侧验证，`./firmware/tests/g722/run.sh` 不需要 IDF 或硬件。
 - `firmware/tests/link_proto/`：无线协议主机侧验证，`./firmware/tests/link_proto/run.sh` 不需要 IDF 或硬件。
@@ -58,7 +58,8 @@ ESP-IDF 固定为 v5.5.3；在仓库根目录使用 `./firmware/build.sh s3` 和
 - 无线公共字段使用小端序。接收端必须校验版本、类型和长度，并丢弃不合法输入。
 - 无线公共 `seq` 为 4 字节，各类型独立递增；ACK 负载回送被确认的按键事件序号，重传按键事件不得改变事件序号。
 - 配对通过物理操作和限定时间窗完成；绑定信息持久化到 NVS，正常重连不得清除绑定。正式语音和按键流量使用加密单播，广播只用于无敏感数据的发现或调试。
-- 快捷键映射保存在 S3 NVS。默认 UP 为 Right Alt、DOWN 保留、OK 为 Enter；非法映射不得写入。
+- 快捷键映射保存在 S3 NVS。默认 UP 为 Right Alt、DOWN 为 Right Ctrl、OK 为 Enter；非法映射不得写入。
+- C3 音频为键控武装推流：物理 UP/DOWN 按下武装后才编码发送；约 8 s 静音尾、120 s 最长会话、OK 或断链卸武装；空闲不发音频包（codec 可热备）。武装跟物理键，不跟 S3 上的 HID 映射取值。
 
 需要改变上述基线时，先说明原因、兼容影响与验证方案，经用户确认后同步更新 `docs/DESIGN.md`、协议定义、测试和相关文档，避免只改一侧实现。
 

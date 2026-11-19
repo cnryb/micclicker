@@ -9,7 +9,7 @@
 // all-keys-up") checkable on the host in firmware/tests/key_map, and it keeps the panel
 // that writes NVS (mic_key_store) from also owning the interpretation of a report.
 //
-// Defaults are the design baseline: UP = Right Alt, DOWN = reserved (no output),
+// Defaults are the design baseline: UP = Right Alt, DOWN = Right Ctrl,
 // OK = Enter.
 
 #include <stdbool.h>
@@ -51,7 +51,7 @@ extern "C" {
 // Common keycodes, spelled out so the defaults do not depend on a TinyUSB header.
 #define MIC_HID_KEY_ENTER 0x28
 
-// "No output at all" — the value DOWN carries by default.
+// "No output at all" — a legal binding when a physical key should be silent.
 #define MIC_HID_KEYCODE_NONE 0x00
 
 typedef struct {
@@ -79,7 +79,7 @@ esp_err_t mic_key_binding_validate(const mic_key_binding_t *binding);
 // individually valid. Returns ESP_ERR_INVALID_STATE when a table is only partly filled.
 esp_err_t mic_key_map_validate(const mic_key_map_t *map);
 
-// Fill in the design defaults (UP = Right Alt, DOWN = reserved, OK = Enter).
+// Fill in the design defaults (UP = Right Alt, DOWN = Right Ctrl, OK = Enter).
 void mic_key_map_defaults(mic_key_map_t *map);
 
 // Append the binding for `key_id`, or NULL when the table has no such key.

@@ -56,7 +56,7 @@
 | 8–9 | DOWN |
 | 12–13 | OK |
 
-默认：UP = Right Alt（`modifier=0x40`, `keycode=0`）、DOWN = 无输出、OK = Enter（`keycode=0x28`）。
+默认：UP = Right Alt（`modifier=0x40`, `keycode=0`）、DOWN = Right Ctrl（`modifier=0x10`, `keycode=0`）、OK = Enter（`keycode=0x28`）。
 
 ## 3. GET 状态报告（64 字节）
 

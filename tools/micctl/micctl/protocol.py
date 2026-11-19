@@ -40,6 +40,7 @@ KEY_ID_OK = 0x03
 
 KEYCODE_NONE = 0x00
 KEYCODE_ENTER = 0x28
+MOD_RIGHT_CTRL = 0x10
 MOD_RIGHT_ALT = 0x40
 
 KEYCODE_RESERVED_MIN = 0x01
@@ -138,7 +139,7 @@ def validate_map(key_map: KeyMap) -> None:
 def default_map() -> KeyMap:
     return KeyMap(
         up=KeyBinding(KEY_ID_UP, MOD_RIGHT_ALT, KEYCODE_NONE),
-        down=KeyBinding(KEY_ID_DOWN, 0, KEYCODE_NONE),
+        down=KeyBinding(KEY_ID_DOWN, MOD_RIGHT_CTRL, KEYCODE_NONE),
         ok=KeyBinding(KEY_ID_OK, 0, KEYCODE_ENTER),
     )
 

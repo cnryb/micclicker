@@ -90,15 +90,16 @@ last_ts=$(sed -n 's/^I (\([0-9]*\).*/\1/p' "$C3_LOG" | sed -n '$p')
 span_ms=$(( last_ts > first_ts ? last_ts - first_ts : 0 ))
 span_s=$(( span_ms / 1000 ))
 
-# Frame rate: the design is 50 frames/s (20 ms each). Allow 2% either way for the
-# per-second status sampling boundary.
-if [[ "$span_s" -ge 5 && "$c3_captured" -gt 0 ]]; then
-    rate_x100=$(( c3_captured * 100 / span_s ))
+# Frame rate uses *encoded* frames: capture still runs while disarmed (codec stays warm),
+# so captured/s is always ~50 and would hide a stream that never armed. Allow 2% either
+# way for the per-second status sampling boundary.
+if [[ "$span_s" -ge 5 && "$c3_encoded" -gt 0 ]]; then
+    rate_x100=$(( c3_encoded * 100 / span_s ))
     ok=0
     if [[ $rate_x100 -ge 4900 && $rate_x100 -le 5100 ]]; then ok=1; fi
-    check "sender frame rate" "$ok" "${rate_x100}/100 fps over ${span_s}s (want 50.00)"
+    check "sender frame rate" "$ok" "${rate_x100}/100 fps over ${span_s}s (want 50.00 encoded)"
 else
-    check "sender frame rate" 0 "log too short to measure (${span_s}s)"
+    check "sender frame rate" 0 "log too short or never armed (${span_s}s, encoded=$c3_encoded)"
 fi
 
 check "sender capture errors" "$([[ "$c3_cap_err" -eq 0 ]] && echo 1 || echo 0)" "capture_err=$c3_cap_err"
@@ -116,10 +117,10 @@ if [[ $send_err_ratio_x1000 -le 5 ]]; then ok=1; fi
 check "sender send failures" "$ok" "$c3_send_err of $((c3_sent + c3_send_err)) (${send_err_ratio_x1000}/1000, want <=5)"
 
 ok=0
-if [[ "$c3_sent" -gt 0 && "$c3_captured" -gt 0 ]]; then
-    sent_pct=$(( c3_sent * 100 / c3_captured ))
+if [[ "$c3_sent" -gt 0 && "$c3_encoded" -gt 0 ]]; then
+    sent_pct=$(( c3_sent * 100 / c3_encoded ))
     if [[ $sent_pct -ge 99 ]]; then ok=1; fi
-    check "sender delivery rate" "$ok" "$c3_sent of $c3_captured captured (${sent_pct}%, want >=99)"
+    check "sender delivery rate" "$ok" "$c3_sent of $c3_encoded encoded (${sent_pct}%, want >=99)"
 else
     check "sender delivery rate" 0 "no frames"
 fi

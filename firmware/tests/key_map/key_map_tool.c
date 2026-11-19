@@ -46,8 +46,9 @@ static void test_defaults(void)
     const mic_key_binding_t *ok = mic_key_map_find(&map, MIC_KEY_ID_OK);
     check(up != NULL && up->modifier == MIC_HID_MOD_RIGHT_ALT && up->keycode == MIC_HID_KEYCODE_NONE,
           "UP defaults to Right Alt alone");
-    check(down != NULL && down->modifier == 0 && down->keycode == MIC_HID_KEYCODE_NONE,
-          "DOWN is reserved (no output)");
+    check(down != NULL && down->modifier == MIC_HID_MOD_RIGHT_CTRL &&
+              down->keycode == MIC_HID_KEYCODE_NONE,
+          "DOWN defaults to Right Ctrl alone");
     check(ok != NULL && ok->modifier == 0 && ok->keycode == MIC_HID_KEY_ENTER,
           "OK defaults to Enter");
     check(mic_key_map_find(&map, 0x09) == NULL, "an unknown key id has no binding");
@@ -170,11 +171,11 @@ static void test_state_machine(void)
     check(mic_key_state_apply(&state, MIC_KEY_ID_OK, MIC_KEY_EVENT_PRESS), "OK press changes state");
     check_report(&state, 0, enter, "OK reports Enter in the first key slot");
 
-    // DOWN is reserved: pressing it must produce no output at all.
+    // DOWN defaults to Right Ctrl: holding it with OK ORs the modifier onto Enter.
     check(mic_key_state_apply(&state, MIC_KEY_ID_DOWN, MIC_KEY_EVENT_PRESS), "DOWN press changes state");
-    check_report(&state, 0, enter, "DOWN adds nothing to the report");
+    check_report(&state, MIC_HID_MOD_RIGHT_CTRL, enter, "DOWN adds Right Ctrl to the report");
     check(mic_key_state_apply(&state, MIC_KEY_ID_DOWN, MIC_KEY_EVENT_RELEASE), "DOWN release changes state");
-    check_report(&state, 0, enter, "the report is unchanged after DOWN is released");
+    check_report(&state, 0, enter, "releasing DOWN leaves Enter alone");
 }
 
 static void test_modifier_union(void)

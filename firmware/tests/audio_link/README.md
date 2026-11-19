@@ -15,6 +15,8 @@ ES8311 + I2S                                           UAC2 麦克风端点
 
 两端均为产品固件（非探针）：`./firmware/build.sh c3` 与 `./firmware/build.sh s3`。
 
+C3 为**键控武装推流**（见 [DESIGN.md](../../../docs/DESIGN.md) 5.1）：冷启动默认 `armed=0`，不编码不发音频包。验收前须按一次物理 **UP 或 DOWN** 开流；长稳窗口内须保持武装（持续或间隔少于约 8 s 的语音能量，否则静音尾会卸武装）。STATUS 行含 `armed=`。主机侧用电脑键盘停录、或微信「任意键停止」后，C3 仍可能再推约 8 s，属预期；按 OK 可立刻卸武装。
+
 ## 2. 判分脚本
 
 ```bash
@@ -25,10 +27,10 @@ ES8311 + I2S                                           UAC2 麦克风端点
 
 | 检查 | 判据 | 理由 |
 | :--- | :--- | :--- |
-| 发送帧率 | 50.00 fps ±2% | 320 样本/20 ms 是设计基线，偏差意味着采集或节拍错 |
+| 发送帧率 | 50.00 fps ±2%（按 `encoded`） | 未武装时仍在采集，故用编码帧率；整窗须保持 armed |
 | 采集/编码错误 | 必须 0 | 任何非零都说明 codec 或编码器有问题 |
 | 发送失败率 | ≤ 0.5% | ESP-NOW 队列瞬时满会导致拒发，发送端用同一序号重试；大量失败说明无线跟不上 50 fps |
-| 送达率 | ≥ 99% | `sent / captured` |
+| 送达率 | ≥ 99% | `sent / encoded` |
 | 解码错误 | 必须 0 | 零丢包时不应出现 |
 | 有效丢包 | ≤ 0.1%（`gap − late`） | 见 [protocol.md](../../../docs/protocol.md) 3.4 |
 | 环形缓冲溢出 | 必须 0（录制中） | 溢出＝端点没被排空，可听为断裂 |
@@ -120,10 +122,13 @@ python3 -c "import serial,time; s=serial.Serial('/dev/cu.usbmodemXXXX',115200);
 f=open('s3.log','wb');
 [f.write(d) or f.flush() for d in iter(lambda: s.read(4096), b'') if d]" &
 
-# 5) 录音 30 分钟
+# 5) 按一次 C3 的 UP 或 DOWN 武装推流（日志应出现 C3_AUDIO_ARM: ARM）
+#    长稳期间保持有语音能量，避免约 8 s 静音尾卸武装；需要立刻停流时按 OK
+
+# 6) 录音 30 分钟
 ffmpeg -y -f avfoundation -i ":0" -t 1800 -ar 16000 -ac 1 -c:a pcm_s16le rec30min.wav
 
-# 6) 判分
+# 7) 判分
 ./firmware/tests/audio_link/check.sh c3.log s3.log 1800
 ```
 

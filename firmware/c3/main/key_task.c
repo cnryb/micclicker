@@ -83,6 +83,9 @@ static volatile bool s_heartbeat_replied;
 // trackers and its all-keys-up decisions off this field.
 static uint16_t s_session;
 
+// Shared with the audio task: when clear, encode+send are skipped (DESIGN.md 5.1).
+static volatile bool s_audio_armed;
+
 static const char *key_name(uint8_t key_id)
 {
     switch (key_id) {
@@ -100,6 +103,39 @@ static const char *key_name(uint8_t key_id)
 static const char *event_name(uint8_t event)
 {
     return event == MIC_KEY_EVENT_PRESS ? "press" : "release";
+}
+
+bool micclicker_c3_audio_armed(void)
+{
+    return s_audio_armed;
+}
+
+void micclicker_c3_audio_force_off(void)
+{
+    // Callers log the reason; this only clears the latch so hot paths stay allocation-free.
+    s_audio_armed = false;
+}
+
+static void arm_on_voice_key(uint8_t key_id)
+{
+    if (key_id != MIC_KEY_SLOT_UP && key_id != MIC_KEY_SLOT_DOWN) {
+        return;
+    }
+    if (!s_audio_armed) {
+        s_audio_armed = true;
+        ESP_LOGI(TAG, "C3_AUDIO_ARM: ARM key=%s", key_name(key_id));
+    }
+}
+
+static void disarm_on_ok(uint8_t key_id)
+{
+    if (key_id != MIC_KEY_SLOT_OK) {
+        return;
+    }
+    if (s_audio_armed) {
+        s_audio_armed = false;
+        ESP_LOGI(TAG, "C3_AUDIO_ARM: DISARM reason=ok");
+    }
 }
 
 static const mic_key_windows_t s_windows = {
@@ -298,6 +334,12 @@ static void key_task(void *argument)
                         ESP_LOGI(TAG, "C3_KEYS: EVENT key=%s event=%s seq=%" PRIu32 " mv=%d",
                                  key_name(events[i].key_id), event_name(events[i].event), seq,
                                  millivolts);
+                        // Arm/disarm follow the press edge only. HID still goes out for
+                        // every event; disarm never synthesizes an extra voice hotkey.
+                        if (events[i].event == MIC_KEY_EVENT_PRESS) {
+                            arm_on_voice_key(events[i].key_id);
+                            disarm_on_ok(events[i].key_id);
+                        }
                     }
                 }
             }
@@ -317,6 +359,12 @@ static void key_task(void *argument)
             now - heartbeat_sent_us > (int64_t)KEY_HEARTBEAT_TIMEOUT_MS * 1000) {
             s_heartbeat_outstanding = 0;
             ++s_stats.heartbeat_missed;
+            // A missed heartbeat is the sender's view of a dead link; stop streaming so a
+            // later re-arm starts a clean session rather than leaking packets into the void.
+            if (s_audio_armed) {
+                s_audio_armed = false;
+                ESP_LOGI(TAG, "C3_AUDIO_ARM: DISARM reason=hb_miss");
+            }
         }
 
         vTaskDelay(pdMS_TO_TICKS(2));
